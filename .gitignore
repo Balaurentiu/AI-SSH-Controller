@@ -1,0 +1,17 @@
+#Fișiere de configurare sensibile
+config.ini
+#Fisiere de sesiune și date persistente
+session.json
+keys/
+#Cache și fișiere compilate Python
+pycache/
+*.pyc
+*.pyo
+*.pyd
+#Fișiere specifice sistemului de operare
+.DS_Store
+#Fișiere de mediu virtual Python
+venv/
+.venv/
+env/
+.env

@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="column" style="flex: 1;">
+    <div class="section is-flexible">
+        <h2>Agent Persistent Memory</h2>
+        <div class="controls">
+            <button id="reset-button" style="background-color: #9c0e35;">Reset Agent Memory</button>
+            <button id="debug-button" style="background-color: #5c5c5c;">Toggle Debug View</button>
+        </div>
+        <textarea id="history-textarea" readonly style="margin-top: 10px;"></textarea>
+    </div>
+</div>
+<div id="raw-llm-modal-overlay" class="modal-overlay"></div>
+<div id="raw-llm-modal" class="modal-content">
+    <span class="modal-close-btn" data-modal-id="raw-llm">&times;</span>
+    <h2>Raw LLM Responses</h2>
+    <textarea id="raw-llm-textarea" readonly></textarea>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const resetButton = document.getElementById('reset-button');
+    const debugButton = document.getElementById('debug-button');
+    const historyTextarea = document.getElementById('history-textarea');
+    const rawLlmTextarea = document.getElementById('raw-llm-textarea');
+
+    resetButton.onclick = () => {
+        openModal('reset-confirm');
+    };
+    
+    debugButton.onclick = () => {
+        openModal('raw-llm');
+    };
+
+    socket.on('initial_state', (data) => {
+        if(historyTextarea) historyTextarea.value = data.agent_history;
+        if(rawLlmTextarea) rawLlmTextarea.value = data.raw_llm_responses;
+    });
+
+    socket.on('update_history', msg => {
+        if(historyTextarea) {
+            historyTextarea.value = msg.data;
+            historyTextarea.scrollTop = historyTextarea.scrollHeight;
+        }
+    });
+
+    socket.on('update_raw_llm_responses', msg => {
+        if(rawLlmTextarea) {
+            rawLlmTextarea.value = msg.data;
+        }
+    });
+
+});
+</script>
+{% endblock %}

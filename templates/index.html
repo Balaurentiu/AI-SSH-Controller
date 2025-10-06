@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Agent Controller</title>
+</head>
+<body>
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="column column-left">
+    <div class="section">
+        <h2>Objective</h2>
+        <textarea id="objective-textarea" placeholder="Enter your high-level objective here..."></textarea>
+        <div style="margin-top: 10px; display: flex; gap: 20px; align-items: center; color: #c0c0c0;">
+            <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="independent" checked> Independent Mode</label>
+            <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="assisted"> Assisted Mode</label>
+        </div>
+        <div class="controls">
+            <button id="execute-button">Execute Task</button>
+            <button id="pause-button" style="display: none; background-color: #e67e22;">Pause</button>
+            <button id="stop-button" style="display: none; background-color: #c0392b;">Stop Task</button>
+        </div>
+    </div>
+    <div class="section is-flexible">
+        <h2>Agent Execution Log (Live)</h2>
+        <textarea id="log-textarea" readonly></textarea>
+    </div>
+</div>
+<div class="column column-right">
+    <div class="section is-flexible">
+        <h2>Remote System Screen (Live)</h2>
+        <textarea id="vm-textarea" readonly></textarea>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const executeButton = document.getElementById('execute-button');
+    const stopButton = document.getElementById('stop-button');
+    const pauseButton = document.getElementById('pause-button');
+    const objectiveTextarea = document.getElementById('objective-textarea');
+    const logTextarea = document.getElementById('log-textarea');
+    const vmTextarea = document.getElementById('vm-textarea');
+    const executionModeRadios = document.querySelectorAll('input[name="execution_mode"]');
+
+    // Functie helper pentru a activa/dezactiva controalele modului
+    const setExecutionModeRadiosDisabled = (disabled) => {
+        executionModeRadios.forEach(radio => {
+            radio.disabled = disabled;
+            radio.parentElement.style.color = disabled ? '#666' : '#c0c0c0';
+            radio.parentElement.style.cursor = disabled ? 'not-allowed' : 'pointer';
+        });
+    };
+
+    const savedMode = sessionStorage.getItem('executionMode');
+    if (savedMode) {
+        const radioToSelect = document.querySelector(`input[name="execution_mode"][value="${savedMode}"]`);
+        if (radioToSelect) {
+            radioToSelect.checked = true;
+        }
+    }
+    
+    executionModeRadios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            const newMode = e.target.value;
+            sessionStorage.setItem('executionMode', newMode);
+            // Daca sarcina este in pauza, trimitem actualizarea imediat
+            if (pauseButton.style.display === 'block' && pauseButton.textContent === 'Resume') {
+                 socket.emit('update_execution_mode', { mode: newMode });
+            }
+        });
+    });
+
+    const savedObjective = sessionStorage.getItem('savedObjective');
+    if (savedObjective) {
+        objectiveTextarea.value = savedObjective;
+    }
+    objectiveTextarea.addEventListener('input', () => {
+        sessionStorage.setItem('savedObjective', objectiveTextarea.value);
+    });
+
+    const appendAndScroll = (textarea, text) => {
+        if (text === null || text === undefined) return;
+        textarea.value += text;
+        textarea.scrollTop = textarea.scrollHeight;
+    };
+
+    executeButton.onclick = () => {
+        if (objectiveTextarea.value.trim() === "") {
+            openModal('objective-empty');
+            return;
+        }
+        const selectedMode = document.querySelector('input[name="execution_mode"]:checked').value;
+        socket.emit('execute_task', {
+            data: objectiveTextarea.value,
+            mode: selectedMode
+        });
+    };
+
+    stopButton.onclick = () => {
+        socket.emit('stop_task');
+        closeModal('approval');
+        closeModal('rejection');
+    };
+
+    pauseButton.onclick = () => {
+        if (pauseButton.textContent === 'Pause') {
+            socket.emit('pause_task');
+        } else {
+            socket.emit('resume_task', {data: objectiveTextarea.value});
+        }
+    };
+
+    socket.on('agent_log', msg => {
+        if (logTextarea) appendAndScroll(logTextarea, msg.data + '\n');
+    });
+
+    socket.on('vm_screen', msg => {
+        if (vmTextarea) {
+            if (msg.clear === true) {
+                vmTextarea.value = msg.data || "";
+            } else {
+                appendAndScroll(vmTextarea, msg.data);
+            }
+        }
+    });
+
+    socket.on('task_started', () => {
+        executeButton.style.display = 'none';
+        stopButton.style.display = 'block';
+        pauseButton.style.display = 'block';
+        pauseButton.textContent = 'Pause';
+        objectiveTextarea.disabled = true;
+        setExecutionModeRadiosDisabled(true);
+    });
+
+    socket.on('task_finished', () => {
+        executeButton.style.display = 'block';
+        stopButton.style.display = 'none';
+        pauseButton.style.display = 'none';
+        objectiveTextarea.disabled = false;
+        setExecutionModeRadiosDisabled(false);
+        closeModal('approval');
+        closeModal('rejection');
+    });
+
+    socket.on('task_paused', () => {
+        pauseButton.textContent = 'Resume';
+        pauseButton.style.backgroundColor = '#2ecc71';
+        objectiveTextarea.disabled = false;
+        setExecutionModeRadiosDisabled(false);
+    });
+
+    socket.on('task_resumed', () => {
+        pauseButton.textContent = 'Pause';
+        pauseButton.style.backgroundColor = '#e67e22';
+        objectiveTextarea.disabled = true;
+        setExecutionModeRadiosDisabled(true);
+    });
+
+    socket.on('initial_state', (data) => {
+        if(logTextarea) logTextarea.value = data.last_log;
+        if(vmTextarea) vmTextarea.value = data.vm_output;
+        
+        const isPaused = data.task_running && data.task_paused;
+        const isRunning = data.task_running && !data.task_paused;
+
+        if (data.task_running) {
+            executeButton.style.display = 'none';
+            stopButton.style.display = 'block';
+            pauseButton.style.display = 'block';
+            objectiveTextarea.disabled = isRunning;
+            setExecutionModeRadiosDisabled(isRunning);
+            
+            if (isPaused) {
+                pauseButton.textContent = 'Resume';
+                pauseButton.style.backgroundColor = '#2ecc71';
+            } else {
+                pauseButton.textContent = 'Pause';
+                pauseButton.style.backgroundColor = '#e67e22';
+            }
+        } else {
+            executeButton.style.display = 'block';
+            stopButton.style.display = 'none';
+            pauseButton.style.display = 'none';
+            objectiveTextarea.disabled = false;
+            setExecutionModeRadiosDisabled(false);
+        }
+    });
+});
+</script>
+{% endblock %}
+</body>
+</html>
+

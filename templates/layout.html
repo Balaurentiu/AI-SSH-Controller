@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Agent Controller</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        html, body { height: 100%; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #e0e0e0; }
+        body { display: flex; flex-direction: column; }
+        nav { padding: 10px 20px; border-bottom: 1px solid #444; background-color: #1e1e1e; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; }
+        .nav-links a { color: #7aa5d2; text-decoration: none; font-size: 18px; margin-right: 20px; }
+        .nav-links a:hover, .nav-links a.active { text-decoration: underline; color: #fff; }
+        .nav-actions { display: flex; gap: 10px; align-items: center; }
+        .nav-button { padding: 6px 12px; font-size: 14px; line-height: 1.5; border-radius: 4px; cursor: pointer; border: 1px solid #555; color: #d4d4d4; margin: 0; background-color: transparent; text-decoration: none; }
+        #reasoning-btn { background-color: #3b5998; }
+        #save-session-btn { background-color: #5a3e85; }
+        .load-session-label { background-color: #6c757d; }
+        input[type="file"].hidden-file-input { display: none; }
+        .settings-bar { background-color: #2a2a2d; padding: 5px 20px; border-bottom: 1px solid #444; display: flex; gap: 15px; flex-wrap: wrap; align-items: center; }
+        .config-trigger { border: 1px solid #444; border-radius: 5px; padding: 2px 15px; cursor: pointer; background-color: #3a3a3d; min-width: 280px; width: auto; flex-shrink: 0; transition: background-color 0.2s; }
+        .config-trigger:hover { background-color: #4a4a4d; }
+        .config-trigger.disabled { opacity: 0.5; cursor: not-allowed; background-color: #333; }
+        .config-trigger.failure .summary-text, .config-trigger.failure h3 { color: #e57373; }
+        .config-trigger.success .summary-text { color: #81c784; }
+        .config-trigger h3 { margin: 5px 0; font-size: 14px; color: #7aa5d2; }
+        .config-trigger .summary-text { font-size: 12px; color: #c0c0c0; font-family: monospace; min-height: 14px; }
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); z-index: 1000; display: none; }
+        .modal-overlay.active { display: block; }
+        .modal-content { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: #2a2a2d; padding: 20px; border-radius: 8px; border: 1px solid #444; z-index: 1001; display: none; max-width: 90%; }
+        .modal-content.active { display: block; }
+        #agent-modal { width: auto; }
+        #system-modal { min-width: 800px; width: auto }
+        #raw-llm-modal { width: 70vw; height: 60vh; max-width: 1200px; display: none; flex-direction: column; resize: both; overflow: auto; }
+        #raw-llm-modal.active { display: flex; }
+        #raw-llm-textarea { height: 100%; }
+        #prompt-editor-modal { width: 80vw; max-width: 1400px; height: 80vh; display: none; flex-direction: column; }
+        #prompt-editor-modal.active { display: flex; }
+        .prompt-editor-container { display: flex; gap: 20px; flex-grow: 1; min-height: 0; }
+        .prompt-section { display: flex; flex-direction: column; flex: 1; }
+        .prompt-section label { margin-bottom: 10px; font-weight: bold; color: #aaa; }
+        .prompt-section textarea { height: 100%; }
+        .prompt-footer { margin-top: 15px; border-top: 1px solid #444; padding-top: 10px; flex-shrink: 0; }
+        .validation-note { font-size: 12px; color: #aaa; margin: 0 0 10px; }
+        .validation-note code { background-color: #1e1e1e; padding: 2px 4px; border-radius: 3px; }
+        .footer-controls { display: flex; justify-content: flex-end; align-items: center; gap: 15px; }
+        #save-prompts-btn { width: auto; background-color: #4CAF50; }
+        .modal-content h2 { margin: 0 0 20px 0; color: #7aa5d2; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .modal-close-btn { position: absolute; top: 15px; right: 20px; font-size: 28px; color: #aaa; cursor: pointer; line-height: 1; }
+        .modal-close-btn:hover { color: #fff; }
+        .modal-fieldset { border: none; padding: 0; display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+        .settings-item { display: flex; flex-direction: column; }
+        .settings-item.with-button { flex-direction: row; align-items: flex-end; }
+        .settings-item label { font-size: 14px; margin-bottom: 5px; color: #aaa; }
+        .settings-item input, .settings-item select { background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box; }
+        #llm_provider, #model_name_select { width: 140px; }
+        #ollama_url, #gemini_api_key { width: 200px; }
+        #max_steps { width: 60px; }
+        #vm_ip { width: 140px; }
+        #vm_user, #vm_password { width: 110px; }
+        #connection_history { width: 150px; }
+        .status-label { font-size: 12px; height: 14px; margin-bottom: 5px; color: #aaa; font-family: monospace; }
+        .status-label.failure { color: #e57373; }
+        .status-label.success { color: #81c784; }
+        .settings-item button { padding: 8px 15px; font-size: 14px; width: auto; margin-top: 0; border-radius: 4px; cursor: pointer; text-align: center; }
+        #save-agent-btn, #save-system-btn { width: 100%; }
+        #save-agent-btn { background-color: #0e639c; }
+        #save-system-btn { background-color: #2d6a4f; }
+        #delete-connection-btn { background-color: #9c0e35; width: auto; padding: 8px 10px; }
+        .content { display: flex; flex-grow: 1; min-height: 0; }
+        .column { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+        .column-left { flex: 1; min-width: 300px; }
+        .column-right { flex: 2; }
+        .section { display: flex; flex-direction: column; min-height: 0; }
+        .section.is-flexible { flex-grow: 1; }
+        h2 { color: #7aa5d2; border-bottom: 1px solid #444; padding-bottom: 10px; margin: 0 0 10px 0; flex-shrink: 0; }
+        textarea { width: 100%; flex-grow: 1; box-sizing: border-box; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; padding: 10px; font-family: "Consolas", monospace; font-size: 14px; border-radius: 4px; resize: none; }
+        #objective-textarea { height: 100px; flex-grow: 0; }
+        button { width: 100%; box-sizing: border-box; background-color: #0e639c; color: #d4d4d4; border: 1px solid #555; padding: 10px; font-size: 16px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+        .controls { display: flex; gap: 10px; }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="nav-links">
+            <a href="/" id="nav-live">Live Control</a>
+            <a href="/history" id="nav-history">History & Reports</a>
+        </div>
+        <div class="nav-actions">
+            <a href="/save_session" id="save-session-btn" class="nav-button">Save Session</a>
+            <label for="load-session-input" class="nav-button load-session-label">Load Session</label>
+            <input type="file" id="load-session-input" class="hidden-file-input" accept=".json">
+        </div>
+    </nav>
+
+    <div class="settings-bar">
+        <div id="agent-config-trigger" class="config-trigger {{ llm_status.status }}">
+            <h3>Agent & LLM Configuration</h3>
+            <div id="agent-summary" class="summary-text">{{ llm_status.message }}</div>
+        </div>
+        <div id="system-config-trigger" class="config-trigger {{ ssh_status.status }}">
+            <h3>Remote System Connection</h3>
+            <div id="system-summary" class="summary-text">{{ ssh_status.message }}</div>
+        </div>
+        <div id="prompt-editor-trigger" class="config-trigger">
+            <h3>Prompt Editor</h3>
+            <div class="summary-text">Modify agent instruction templates</div>
+        </div>
+    </div>
+    
+    <div class="content">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Modals Globale -->
+    <div id="objective-empty-modal-overlay" class="modal-overlay"></div>
+    <div id="objective-empty-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="objective-empty">&times;</span>
+        <h2>Objective Missing</h2>
+        <p>Please enter an objective to begin the task.</p>
+        <button onclick="closeModal('objective-empty')" style="width: auto;">OK</button>
+    </div>
+    <div id="reset-confirm-modal-overlay" class="modal-overlay"></div>
+    <div id="reset-confirm-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="reset-confirm">&times;</span>
+        <h2>Confirm Reset</h2>
+        <p>Are you sure you want to reset the agent's entire memory and screen output? This cannot be undone.</p>
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button onclick="closeModal('reset-confirm')" style="background-color: #5c5c5c;">Cancel</button>
+            <button onclick="socket.emit('reset_agent', {data: 'reset'}); closeModal('reset-confirm');" style="background-color: #9c0e35;">Reset</button>
+        </div>
+    </div>
+    <div id="agent-modal-overlay" class="modal-overlay"></div>
+    <div id="agent-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="agent">&times;</span>
+        <h2>Agent & LLM Configuration</h2>
+        <fieldset class="modal-fieldset">
+            <div class="settings-item"><label for="llm_provider">Provider:</label><select id="llm_provider" name="llm_provider"><option value="ollama" {% if config['General']['provider'] == 'ollama' %}selected{% endif %}>Ollama (Local)</option><option value="gemini" {% if config['General']['provider'] == 'gemini' %}selected{% endif %}>Gemini (API)</option></select></div>
+            <div class="settings-item" id="ollama_url_item"><label for="ollama_url">Ollama Addr:</label><input type="text" id="ollama_url" name="ollama_url" value="{{ config['Ollama']['api_url'] }}"></div>
+            <div class="settings-item" id="gemini_api_key_item"><label for="gemini_api_key">Gemini API Key:</label><input type="password" id="gemini_api_key" name="gemini_api_key" value="{{ config['General']['gemini_api_key'] }}"></div>
+            <div class="settings-item with-button">
+                <div style="display: flex; flex-direction: column;">
+                    <label for="model_name_select">Model:</label>
+                    <select id="model_name_select" name="model_name_select">
+                        <option value="{{ config['Agent']['model_name'] }}">{{ config['Agent']['model_name'] }}</option>
+                    </select>
+                </div>
+                <button id="fetch-models-btn" style="width: auto; padding: 8px 12px; margin-left: 8px;">Fetch</button>
+            </div>
+            <div class="settings-item"><label for="max_steps">Max Steps:</label><input type="number" id="max_steps" name="max_steps" value="{{ config['Agent']['max_steps'] }}"></div>
+            <div class="settings-item"><label id="agent-status-label" class="status-label">&nbsp;</label><button id="save-agent-btn">Save</button></div>
+        </fieldset>
+    </div>
+    <div id="system-modal-overlay" class="modal-overlay"></div>
+    <div id="system-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="system">&times;</span>
+        <h2>Remote System Connection</h2>
+        <fieldset class="modal-fieldset">
+            <div class="settings-item"><label for="connection_history">History:</label><select id="connection_history" name="connection_history"></select></div>
+            <div class="settings-item"><label>&nbsp;</label><button id="delete-connection-btn">Delete</button></div>
+            <div class="settings-item"><label for="vm_ip">System IP:</label><input type="text" id="vm_ip" name="vm_ip" value="{{ config['System']['ip_address'] }}"></div>
+            <div class="settings-item"><label for="vm_user">Username:</label><input type="text" id="vm_user" name="vm_user" value="{{ config['System']['username'] }}"></div>
+            <div class="settings-item"><label for="vm_password">User Password:</label><input type="password" id="vm_password" name="vm_password" placeholder="For key deployment"></div>
+            <div class="settings-item" style="width: 100%; flex-direction: column; align-items: stretch; margin-top: 15px;">
+                <label for="public_key_display">Agent's Public Key (copy to remote system's ~/.ssh/authorized_keys)</label>
+                <textarea id="public_key_display" readonly style="height: 60px; background-color: #111; color: #a9a9a9; resize: vertical;"></textarea>
+                <button id="copy-key-btn" style="width: 120px; margin-top: 5px; align-self: flex-end; background-color: #5c5c5c; padding: 8px;">Copy Key</button>
+            </div>
+            <div class="settings-item" style="width: 100%; margin-top: 10px;"><label id="system-status-label" class="status-label">&nbsp;</label><button id="save-system-btn">Save & Deploy</button></div>
+        </fieldset>
+    </div>
+    <div id="raw-llm-modal-overlay" class="modal-overlay"></div>
+    <div id="raw-llm-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="raw-llm">&times;</span>
+        <h2>Raw LLM Responses</h2>
+        <textarea id="raw-llm-textarea" readonly></textarea>
+    </div>
+    <div id="session-loaded-modal-overlay" class="modal-overlay"></div>
+    <div id="session-loaded-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="session-loaded">&times;</span>
+        <h2>Session Loaded</h2>
+        <p>Session loaded successfully! The page will now reload.</p>
+        <button onclick="location.reload()" style="width: auto;">OK</button>
+    </div>
+    <div id="session-error-modal-overlay" class="modal-overlay"></div>
+    <div id="session-error-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="session-error">&times;</span>
+        <h2>Session Load Failed</h2>
+        <p id="session-error-message">An error occurred while loading the session.</p>
+        <button onclick="closeModal('session-error')" style="width: auto;">OK</button>
+    </div>
+    <div id="prompt-editor-modal-overlay" class="modal-overlay"></div>
+    <div id="prompt-editor-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="prompt-editor">&times;</span>
+        <h2>Edit Agent Prompts</h2>
+        <div class="prompt-editor-container">
+            <div class="prompt-section">
+                <label for="ollama-prompt-textarea">Ollama Prompt Template</label>
+                <textarea id="ollama-prompt-textarea"></textarea>
+            </div>
+            <div class="prompt-section">
+                <label for="gemini-prompt-textarea">Gemini Prompt Template</label>
+                <textarea id="gemini-prompt-textarea"></textarea>
+            </div>
+        </div>
+        <div class="prompt-footer">
+            <p class="validation-note">Required: <code>{objective}</code>, <code>{history}</code>, <code>{system_info}</code>, <code>COMMAND:</code>, <code>REPORT:</code></p>
+            <div class="footer-controls">
+                <label id="prompt-status-label" class="status-label">&nbsp;</label>
+                <button id="save-prompts-btn">Save Prompts</button>
+            </div>
+        </div>
+    </div>
+    <div id="approval-modal-overlay" class="modal-overlay"></div>
+    <div id="approval-modal" class="modal-content" style="width: 60vw; max-width: 900px;">
+        <h2>Confirm Command Execution</h2>
+        <div style="margin-bottom: 15px;">
+            <h3 style="color: #aaa; margin: 0 0 5px 0; font-size: 14px; font-weight: bold;">Agent's Reasoning:</h3>
+            <p id="approval-reason-text" style="background-color: #1e1e1e; border: 1px solid #444; padding: 10px; border-radius: 4px; margin: 0; font-family: monospace; color: #d4d4d4;"></p>
+        </div>
+        <h3 style="color: #aaa; margin: 0 0 5px 0; font-size: 14px; font-weight: bold;">Proposed Command (Editable):</h3>
+        <textarea id="approval-command-textarea" style="height: 100px; font-size: 16px;"></textarea>
+        <div id="modification-reason-container" style="display: none; margin-top: 15px;">
+             <h3 style="color: #aaa; margin: 0 0 5px 0; font-size: 14px; font-weight: bold;">Reason for Modification (Optional):</h3>
+             <input type="text" id="modification-reason-input" placeholder="e.g., 'Added a safety flag'" style="width: 100%; box-sizing: border-box;">
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button id="reject-command-btn" style="background-color: #c0392b;">Reject</button>
+            <button id="approve-command-btn" style="background-color: #27ae60;">Approve & Execute</button>
+        </div>
+    </div>
+    <div id="rejection-modal-overlay" class="modal-overlay"></div>
+    <div id="rejection-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="rejection">&times;</span>
+        <h2>Rejection Reason</h2>
+        <p>Please provide a reason for rejecting the command. This will be sent to the agent.</p>
+        <input type="text" id="rejection-reason-input" placeholder="(Optional) e.g., 'Use a different parameter'" style="width: 100%; margin-top: 10px;">
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button id="submit-rejection-btn" style="background-color: #0e639c;">Submit Reason</button>
+        </div>
+    </div>
+    <script>
+        const socket = io();
+    </script>
+    <script>
+    const openModal = (modalId) => {
+        const modal = document.getElementById(`${modalId}-modal`);
+        const overlay = document.getElementById(`${modalId}-modal-overlay`);
+        if (modal && overlay) {
+            modal.classList.add('active');
+            overlay.classList.add('active');
+        }
+    };
+    const closeModal = (modalId) => {
+        const modal = document.getElementById(`${modalId}-modal`);
+        const overlay = document.getElementById(`${modalId}-modal-overlay`);
+        if (modal && overlay) {
+            modal.classList.remove('active');
+            overlay.classList.remove('active');
+        }
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const agentConfigTrigger = document.getElementById('agent-config-trigger');
+        const systemConfigTrigger = document.getElementById('system-config-trigger');
+        const agentSummary = document.getElementById('agent-summary');
+        const closeButtons = document.querySelectorAll('.modal-close-btn');
+        const providerSelect = document.getElementById('llm_provider');
+        const ollamaUrlItem = document.getElementById('ollama_url_item');
+        const geminiApiKeyItem = document.getElementById('gemini_api_key_item');
+        const modelSelect = document.getElementById('model_name_select');
+        const saveAgentBtn = document.getElementById('save-agent-btn');
+        const agentStatusLabel = document.getElementById('agent-status-label');
+        const systemStatusLabel = document.getElementById('system-status-label');
+        const connectionHistorySelect = document.getElementById('connection_history');
+        const deleteConnectionBtn = document.getElementById('delete-connection-btn');
+        const saveSystemBtn = document.getElementById('save-system-btn');
+        const loadSessionInput = document.getElementById('load-session-input');
+        const fetchModelsBtn = document.getElementById('fetch-models-btn');
+        const promptEditorTrigger = document.getElementById('prompt-editor-trigger');
+        const savePromptsBtn = document.getElementById('save-prompts-btn');
+        const ollamaPromptTextarea = document.getElementById('ollama-prompt-textarea');
+        const geminiPromptTextarea = document.getElementById('gemini-prompt-textarea');
+        const promptStatusLabel = document.getElementById('prompt-status-label');
+        const copyKeyBtn = document.getElementById('copy-key-btn');
+        const approvalCommandTextarea = document.getElementById('approval-command-textarea');
+        const approvalReasonText = document.getElementById('approval-reason-text');
+        const modificationReasonContainer = document.getElementById('modification-reason-container');
+        const modificationReasonInput = document.getElementById('modification-reason-input');
+        const approveCommandBtn = document.getElementById('approve-command-btn');
+        const rejectCommandBtn = document.getElementById('reject-command-btn');
+        const rejectionReasonInput = document.getElementById('rejection-reason-input');
+        const submitRejectionBtn = document.getElementById('submit-rejection-btn');
+        let originalCommand = '';
+        
+        function initializeUIState() {
+            if (window.location.pathname === '/history') {
+                document.getElementById('nav-history').classList.add('active');
+            } else {
+                document.getElementById('nav-live').classList.add('active');
+            }
+            const isAgentConfigured = agentSummary.textContent.trim() !== 'Not configured' && !agentSummary.textContent.includes('Failed');
+            if(isAgentConfigured){
+                systemConfigTrigger.classList.remove('disabled');
+            } else {
+                systemConfigTrigger.classList.add('disabled');
+            }
+            toggleProviderFields();
+            populateConnectionHistory();
+        }
+
+        function toggleProviderFields() {
+            if (providerSelect.value === 'ollama') {
+                ollamaUrlItem.style.display = 'flex';
+                geminiApiKeyItem.style.display = 'none';
+            } else {
+                ollamaUrlItem.style.display = 'none';
+                geminiApiKeyItem.style.display = 'flex';
+            }
+        }
+
+        function populateModelDropdown(models, selectedModel) {
+            modelSelect.innerHTML = '';
+            if (!models || models.length === 0) {
+                const option = document.createElement('option');
+                option.value = selectedModel;
+                option.textContent = selectedModel || 'No models found';
+                modelSelect.appendChild(option);
+            } else {
+                models.forEach(model => {
+                    const option = document.createElement('option');
+                    option.value = model;
+                    option.textContent = model.startsWith('models/') ? model.substring(7) : model;
+                    if (model === selectedModel) {
+                        option.selected = true;
+                    }
+                    modelSelect.appendChild(option);
+                });
+            }
+        }
+        
+        function populateConnectionHistory() {
+            fetch('/get_connections').then(r => r.json()).then(connections => {
+                connectionHistorySelect.innerHTML = '<option value="">Select from history...</option>';
+                connections.forEach(conn => {
+                    const option = document.createElement('option');
+                    option.value = JSON.stringify(conn);
+                    option.textContent = `${conn.username}@${conn.ip}`;
+                    connectionHistorySelect.appendChild(option);
+                });
+            });
+        }
+        
+        agentConfigTrigger.addEventListener('click', () => openModal('agent'));
+        
+        systemConfigTrigger.addEventListener('click', () => {
+            if (systemConfigTrigger.classList.contains('disabled')) return;
+            systemStatusLabel.textContent = '';
+            systemStatusLabel.className = 'status-label';
+            
+            const pubKeyTextarea = document.getElementById('public_key_display');
+            pubKeyTextarea.value = 'Loading public key...';
+            fetch('/get_public_key')
+                .then(res => res.json())
+                .then(data => {
+                    pubKeyTextarea.value = (data.status === 'success') ? data.public_key : data.message;
+                }).catch(err => {
+                    pubKeyTextarea.value = 'Error fetching public key.';
+                });
+
+            openModal('system');
+        });
+
+        closeButtons.forEach(btn => btn.addEventListener('click', (e) => closeModal(e.target.dataset.modalId)));
+        document.getElementById('agent-modal-overlay').addEventListener('click', () => closeModal('agent'));
+        document.getElementById('system-modal-overlay').addEventListener('click', () => closeModal('system'));
+        document.getElementById('raw-llm-modal-overlay').addEventListener('click', () => closeModal('raw-llm'));
+        providerSelect.addEventListener('change', toggleProviderFields);
+        promptEditorTrigger.addEventListener('click', () => {
+            promptStatusLabel.textContent = 'Fetching current prompts...';
+            promptStatusLabel.className = 'status-label';
+            fetch('/get_prompts')
+                .then(response => response.json())
+                .then(data => {
+                    ollamaPromptTextarea.value = data.ollama_prompt;
+                    geminiPromptTextarea.value = data.gemini_prompt;
+                    promptStatusLabel.textContent = '';
+                    openModal('prompt-editor');
+                })
+                .catch(err => {
+                    promptStatusLabel.textContent = 'Error fetching prompts.';
+                    promptStatusLabel.className = 'status-label failure';
+                });
+        });
+        document.getElementById('prompt-editor-modal-overlay').addEventListener('click', () => closeModal('prompt-editor'));
+
+        savePromptsBtn.addEventListener('click', () => {
+            promptStatusLabel.textContent = 'Saving...';
+            promptStatusLabel.className = 'status-label';
+            const formData = new FormData();
+            formData.append('ollama_prompt', ollamaPromptTextarea.value);
+            formData.append('gemini_prompt', geminiPromptTextarea.value);
+            fetch('/save_prompts', { method: 'POST', body: formData })
+                .then(response => response.json().then(data => ({ status: response.status, body: data })))
+                .then(({ status, body }) => {
+                    promptStatusLabel.textContent = body.message;
+                    if (status === 200) {
+                        promptStatusLabel.className = 'status-label success';
+                        setTimeout(() => { 
+                            closeModal('prompt-editor');
+                            promptStatusLabel.textContent = '';
+                        }, 2000);
+                    } else {
+                        promptStatusLabel.className = 'status-label failure';
+                    }
+                })
+                .catch(err => {
+                    promptStatusLabel.textContent = 'An unexpected error occurred.';
+                    promptStatusLabel.className = 'status-label failure';
+                });
+        });
+
+        fetchModelsBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            agentStatusLabel.textContent = 'Fetching models...';
+            agentStatusLabel.className = 'status-label';
+            const formData = new FormData();
+            formData.append('provider', providerSelect.value);
+            formData.append('api_url', document.getElementById('ollama_url').value);
+            formData.append('gemini_api_key', document.getElementById('gemini_api_key').value);
+            fetch('/get_llm_models', { method: 'POST', body: formData })
+            .then(response => response.json())
+            .then(data => {
+                agentStatusLabel.textContent = data.message;
+                if (data.status === 'success') {
+                    agentStatusLabel.className = 'status-label success';
+                    populateModelDropdown(data.models, modelSelect.value);
+                } else {
+                    agentStatusLabel.className = 'status-label failure';
+                    populateModelDropdown([], null);
+                }
+            });
+        });
+        
+        saveAgentBtn.addEventListener('click', () => {
+            agentStatusLabel.textContent = 'Saving...';
+            agentStatusLabel.className = 'status-label';
+            const formData = new FormData();
+            formData.append('provider', providerSelect.value);
+            formData.append('model_name', modelSelect.value);
+            formData.append('api_url', document.getElementById('ollama_url').value);
+            formData.append('gemini_api_key', document.getElementById('gemini_api_key').value);
+            formData.append('max_steps', document.getElementById('max_steps').value);
+            fetch('/save_agent_settings', { method: 'POST', body: formData })
+            .then(response => response.json())
+            .then(data => {
+                agentStatusLabel.textContent = data.message;
+                if (data.status === 'success') {
+                    agentStatusLabel.className = 'status-label success';
+                    setTimeout(() => { location.reload(); }, 1500);
+                } else {
+                    agentStatusLabel.className = 'status-label failure';
+                }
+            });
+        });
+
+        saveSystemBtn.addEventListener('click', () => {
+            saveSystemBtn.disabled = true;
+            systemStatusLabel.textContent = 'Deploying...';
+            systemStatusLabel.className = 'status-label';
+            const formData = new FormData();
+            formData.append('ip_address', document.getElementById('vm_ip').value);
+            formData.append('username', document.getElementById('vm_user').value);
+            formData.append('password', document.getElementById('vm_password').value);
+            fetch('/save_system_settings', { method: 'POST', body: formData });
+        });
+        
+        copyKeyBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const pubKeyTextarea = document.getElementById('public_key_display');
+            navigator.clipboard.writeText(pubKeyTextarea.value).then(() => {
+                copyKeyBtn.textContent = 'Copied!';
+                setTimeout(() => { copyKeyBtn.textContent = 'Copy Key'; }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy text: ', err);
+            });
+        });
+
+        loadSessionInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) return;
+            const formData = new FormData();
+            formData.append('session_file', file);
+            fetch('/load_session', { method: 'POST', body: formData })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    openModal('session-loaded');
+                } else {
+                    const errorMsgEl = document.getElementById('session-error-message');
+                    errorMsgEl.textContent = data.message;
+                    openModal('session-error');
+                }
+            });
+        });
+
+        connectionHistorySelect.addEventListener('change', () => { if (connectionHistorySelect.value) { try { const conn = JSON.parse(connectionHistorySelect.value); document.getElementById('vm_ip').value = conn.ip; document.getElementById('vm_user').value = conn.username; } catch(e){} } });
+        deleteConnectionBtn.addEventListener('click', () => {
+            const selectedValue = connectionHistorySelect.value;
+            const performDelete = (body) => { fetch('/delete_connection', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.ok && populateConnectionHistory()); };
+            if (!selectedValue) { if(confirm('Delete all connections?')) performDelete({ delete_all: true }); return; }
+            const conn = JSON.parse(selectedValue);
+            if(confirm(`Delete ${conn.username}@${conn.ip}?`)){
+                performDelete(conn);
+            }
+        });
+
+        socket.on('deploy_finished', (data) => {
+            if (saveSystemBtn) saveSystemBtn.disabled = false;
+            if (systemStatusLabel) {
+                systemStatusLabel.textContent = data.message;
+                systemStatusLabel.className = `status-label ${data.status}`;
+            }
+            if (data.status === 'success') {
+                setTimeout(() => { location.reload(); }, 2000);
+            }
+        });
+
+        socket.on('awaiting_command_approval', (data) => {
+            originalCommand = data.command;
+            approvalReasonText.textContent = data.reason;
+            approvalCommandTextarea.value = data.command;
+            modificationReasonContainer.style.display = 'none';
+            modificationReasonInput.value = '';
+            openModal('approval');
+        });
+
+        approvalCommandTextarea.addEventListener('input', () => {
+            if (approvalCommandTextarea.value !== originalCommand) {
+                modificationReasonContainer.style.display = 'block';
+            } else {
+                modificationReasonContainer.style.display = 'none';
+            }
+        });
+    
+        approveCommandBtn.onclick = () => {
+            const finalCommand = approvalCommandTextarea.value.trim();
+            if (!finalCommand) {
+                alert("Command cannot be empty.");
+                return;
+            }
+            const payload = {
+                approved: true,
+                command: finalCommand
+            };
+            if (finalCommand !== originalCommand) {
+                payload.modification_reason = modificationReasonInput.value.trim() || 'no reason provided';
+            }
+            socket.emit('submit_command_approval', payload);
+            closeModal('approval');
+        };
+    
+        rejectCommandBtn.onclick = () => {
+            closeModal('approval');
+            rejectionReasonInput.value = '';
+            openModal('rejection');
+        };
+    
+        submitRejectionBtn.onclick = () => {
+            let reason = rejectionReasonInput.value.trim();
+            if (reason === '') {
+                reason = "Command not approved by the administrator. Please try an alternative command.";
+            }
+            socket.emit('submit_command_approval', {
+                approved: false,
+                reason: reason
+            });
+            closeModal('rejection');
+        };
+        
+        rejectionReasonInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                submitRejectionBtn.click();
+            }
+        });
+    
+        document.querySelector('.modal-close-btn[data-modal-id="rejection"]').addEventListener('click', () => closeModal('rejection'));
+        document.getElementById('rejection-modal-overlay').addEventListener('click', () => closeModal('rejection'));
+        document.getElementById('approval-modal-overlay').addEventListener('click', () => { /* Prevent closing by clicking overlay */ });
+
+        initializeUIState();
+    });
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+
