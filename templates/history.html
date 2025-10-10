@@ -40,12 +40,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if(rawLlmTextarea) rawLlmTextarea.value = data.raw_llm_responses;
     });
 
-    socket.on('update_history', msg => {
-        if(historyTextarea) {
-            historyTextarea.value = msg.data;
-            historyTextarea.scrollTop = historyTextarea.scrollHeight;
-        }
-    });
+    // NOTE: 'update_history' is now handled globally in layout.html
+    // This ensures the character count is always up-to-date.
 
     socket.on('update_raw_llm_responses', msg => {
         if(rawLlmTextarea) {

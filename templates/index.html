@@ -12,9 +12,13 @@
     <div class="section">
         <h2>Objective</h2>
         <textarea id="objective-textarea" placeholder="Enter your high-level objective here..."></textarea>
-        <div style="margin-top: 10px; display: flex; gap: 20px; align-items: center; color: #c0c0c0;">
-            <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="independent" checked> Independent Mode</label>
-            <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="assisted"> Assisted Mode</label>
+        <div style="margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; color: #c0c0c0; background-color: #1e1e1e; padding: 10px; border-radius: 4px; border: 1px solid #444;">
+            <strong style="grid-column: 1 / 2;">Execution:</strong>
+            <strong style="grid-column: 2 / 3;">Summarization:</strong>
+            <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="independent" checked> Independent</label>
+            <label style="cursor: pointer;"><input type="radio" name="summarization_mode" value="automatic" checked> Automatic</label>
+            <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="assisted"> Assisted</label>
+            <label style="cursor: pointer;"><input type="radio" name="summarization_mode" value="assisted"> Assisted</label>
         </div>
         <div class="controls">
             <button id="execute-button">Execute Task</button>
@@ -45,32 +49,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const logTextarea = document.getElementById('log-textarea');
     const vmTextarea = document.getElementById('vm-textarea');
     const executionModeRadios = document.querySelectorAll('input[name="execution_mode"]');
+    const summarizationModeRadios = document.querySelectorAll('input[name="summarization_mode"]');
 
-    // Functie helper pentru a activa/dezactiva controalele modului
-    const setExecutionModeRadiosDisabled = (disabled) => {
-        executionModeRadios.forEach(radio => {
+    const setRadiosDisabled = (radios, disabled) => {
+        radios.forEach(radio => {
             radio.disabled = disabled;
             radio.parentElement.style.color = disabled ? '#666' : '#c0c0c0';
             radio.parentElement.style.cursor = disabled ? 'not-allowed' : 'pointer';
         });
     };
 
-    const savedMode = sessionStorage.getItem('executionMode');
-    if (savedMode) {
-        const radioToSelect = document.querySelector(`input[name="execution_mode"][value="${savedMode}"]`);
-        if (radioToSelect) {
-            radioToSelect.checked = true;
-        }
+    // Load saved settings from sessionStorage
+    const savedExecMode = sessionStorage.getItem('executionMode');
+    if (savedExecMode) {
+        document.querySelector(`input[name="execution_mode"][value="${savedExecMode}"]`).checked = true;
     }
-    
+    const savedSummMode = sessionStorage.getItem('summarizationMode');
+    if (savedSummMode) {
+        document.querySelector(`input[name="summarization_mode"][value="${savedSummMode}"]`).checked = true;
+    }
+
     executionModeRadios.forEach(radio => {
         radio.addEventListener('change', (e) => {
             const newMode = e.target.value;
             sessionStorage.setItem('executionMode', newMode);
-            // Daca sarcina este in pauza, trimitem actualizarea imediat
             if (pauseButton.style.display === 'block' && pauseButton.textContent === 'Resume') {
                  socket.emit('update_execution_mode', { mode: newMode });
             }
+        });
+    });
+
+    summarizationModeRadios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            sessionStorage.setItem('summarizationMode', e.target.value);
         });
     });
 
@@ -93,10 +104,12 @@ document.addEventListener('DOMContentLoaded', () => {
             openModal('objective-empty');
             return;
         }
-        const selectedMode = document.querySelector('input[name="execution_mode"]:checked').value;
+        const selectedExecMode = document.querySelector('input[name="execution_mode"]:checked').value;
+        const selectedSummMode = document.querySelector('input[name="summarization_mode"]:checked').value;
         socket.emit('execute_task', {
             data: objectiveTextarea.value,
-            mode: selectedMode
+            mode: selectedExecMode,
+            summarization_mode: selectedSummMode
         });
     };
 
@@ -134,7 +147,8 @@ document.addEventListener('DOMContentLoaded', () => {
         pauseButton.style.display = 'block';
         pauseButton.textContent = 'Pause';
         objectiveTextarea.disabled = true;
-        setExecutionModeRadiosDisabled(true);
+        setRadiosDisabled(executionModeRadios, true);
+        setRadiosDisabled(summarizationModeRadios, true);
     });
 
     socket.on('task_finished', () => {
@@ -142,7 +156,8 @@ document.addEventListener('DOMContentLoaded', () => {
         stopButton.style.display = 'none';
         pauseButton.style.display = 'none';
         objectiveTextarea.disabled = false;
-        setExecutionModeRadiosDisabled(false);
+        setRadiosDisabled(executionModeRadios, false);
+        setRadiosDisabled(summarizationModeRadios, false);
         closeModal('approval');
         closeModal('rejection');
     });
@@ -151,14 +166,16 @@ document.addEventListener('DOMContentLoaded', () => {
         pauseButton.textContent = 'Resume';
         pauseButton.style.backgroundColor = '#2ecc71';
         objectiveTextarea.disabled = false;
-        setExecutionModeRadiosDisabled(false);
+        setRadiosDisabled(executionModeRadios, false);
+        setRadiosDisabled(summarizationModeRadios, false); // Allow changes during pause
     });
 
     socket.on('task_resumed', () => {
         pauseButton.textContent = 'Pause';
         pauseButton.style.backgroundColor = '#e67e22';
         objectiveTextarea.disabled = true;
-        setExecutionModeRadiosDisabled(true);
+        setRadiosDisabled(executionModeRadios, true);
+        setRadiosDisabled(summarizationModeRadios, true);
     });
 
     socket.on('initial_state', (data) => {
@@ -173,7 +190,8 @@ document.addEventListener('DOMContentLoaded', () => {
             stopButton.style.display = 'block';
             pauseButton.style.display = 'block';
             objectiveTextarea.disabled = isRunning;
-            setExecutionModeRadiosDisabled(isRunning);
+            setRadiosDisabled(executionModeRadios, isRunning);
+            setRadiosDisabled(summarizationModeRadios, isRunning);
             
             if (isPaused) {
                 pauseButton.textContent = 'Resume';
@@ -187,7 +205,8 @@ document.addEventListener('DOMContentLoaded', () => {
             stopButton.style.display = 'none';
             pauseButton.style.display = 'none';
             objectiveTextarea.disabled = false;
-            setExecutionModeRadiosDisabled(false);
+            setRadiosDisabled(executionModeRadios, false);
+            setRadiosDisabled(summarizationModeRadios, false);
         }
     });
 });

@@ -28,13 +28,13 @@
         .modal-overlay.active { display: block; }
         .modal-content { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: #2a2a2d; padding: 20px; border-radius: 8px; border: 1px solid #444; z-index: 1001; display: none; max-width: 90%; }
         .modal-content.active { display: block; }
-        #agent-modal { width: auto; }
+        #agent-modal { min-width: 650px; }
         #system-modal { min-width: 800px; width: auto }
         #raw-llm-modal { width: 70vw; height: 60vh; max-width: 1200px; display: none; flex-direction: column; resize: both; overflow: auto; }
         #raw-llm-modal.active { display: flex; }
         #raw-llm-textarea { height: 100%; }
-        #prompt-editor-modal { width: 80vw; max-width: 1400px; height: 80vh; display: none; flex-direction: column; }
-        #prompt-editor-modal.active { display: flex; }
+        #prompt-editor-modal, #summarization-prompt-modal { width: 80vw; max-width: 1400px; height: 80vh; display: none; flex-direction: column; }
+        #prompt-editor-modal.active, #summarization-prompt-modal.active { display: flex; }
         .prompt-editor-container { display: flex; gap: 20px; flex-grow: 1; min-height: 0; }
         .prompt-section { display: flex; flex-direction: column; flex: 1; }
         .prompt-section label { margin-bottom: 10px; font-weight: bold; color: #aaa; }
@@ -47,22 +47,17 @@
         .modal-content h2 { margin: 0 0 20px 0; color: #7aa5d2; border-bottom: 1px solid #444; padding-bottom: 10px; }
         .modal-close-btn { position: absolute; top: 15px; right: 20px; font-size: 28px; color: #aaa; cursor: pointer; line-height: 1; }
         .modal-close-btn:hover { color: #fff; }
-        .modal-fieldset { border: none; padding: 0; display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+        .modal-fieldset { border: none; padding: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px 20px; }
         .settings-item { display: flex; flex-direction: column; }
-        .settings-item.with-button { flex-direction: row; align-items: flex-end; }
+        .settings-item.full-width { grid-column: 1 / -1; }
+        .settings-item.with-button { flex-direction: row; align-items: flex-end; gap: 10px; }
+        .settings-item.with-button > div { flex-grow: 1; }
         .settings-item label { font-size: 14px; margin-bottom: 5px; color: #aaa; }
-        .settings-item input, .settings-item select { background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box; }
-        #llm_provider, #model_name_select { width: 140px; }
-        #ollama_url, #gemini_api_key { width: 200px; }
-        #max_steps { width: 60px; }
-        #vm_ip { width: 140px; }
-        #vm_user, #vm_password { width: 110px; }
-        #connection_history { width: 150px; }
+        .settings-item input, .settings-item select { background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box; width: 100%; }
         .status-label { font-size: 12px; height: 14px; margin-bottom: 5px; color: #aaa; font-family: monospace; }
         .status-label.failure { color: #e57373; }
         .status-label.success { color: #81c784; }
         .settings-item button { padding: 8px 15px; font-size: 14px; width: auto; margin-top: 0; border-radius: 4px; cursor: pointer; text-align: center; }
-        #save-agent-btn, #save-system-btn { width: 100%; }
         #save-agent-btn { background-color: #0e639c; }
         #save-system-btn { background-color: #2d6a4f; }
         #delete-connection-btn { background-color: #9c0e35; width: auto; padding: 8px 10px; }
@@ -88,7 +83,7 @@
         <div class="nav-actions">
             <a href="/save_session" id="save-session-btn" class="nav-button">Save Session</a>
             <label for="load-session-input" class="nav-button load-session-label">Load Session</label>
-            <input type="file" id="load-session-input" class="hidden-file-input" accept=".json">
+            <input type="file" id="load-session-input" class="hidden-file-input" accept=".zip">
         </div>
     </nav>
 
@@ -104,6 +99,14 @@
         <div id="prompt-editor-trigger" class="config-trigger">
             <h3>Prompt Editor</h3>
             <div class="summary-text">Modify agent instruction templates</div>
+        </div>
+        <div id="summarization-prompt-trigger" class="config-trigger">
+            <h3>Summarization Prompt</h3>
+            <div class="summary-text">Modify LLM summarization templates</div>
+        </div>
+        <div id="manual-summarize-trigger" class="config-trigger disabled">
+            <h3>Manual Summarize</h3>
+            <div id="history-char-count" class="summary-text">0 chars</div>
         </div>
     </div>
     
@@ -136,36 +139,50 @@
         <fieldset class="modal-fieldset">
             <div class="settings-item"><label for="llm_provider">Provider:</label><select id="llm_provider" name="llm_provider"><option value="ollama" {% if config['General']['provider'] == 'ollama' %}selected{% endif %}>Ollama (Local)</option><option value="gemini" {% if config['General']['provider'] == 'gemini' %}selected{% endif %}>Gemini (API)</option></select></div>
             <div class="settings-item" id="ollama_url_item"><label for="ollama_url">Ollama Addr:</label><input type="text" id="ollama_url" name="ollama_url" value="{{ config['Ollama']['api_url'] }}"></div>
-            <div class="settings-item" id="gemini_api_key_item"><label for="gemini_api_key">Gemini API Key:</label><input type="password" id="gemini_api_key" name="gemini_api_key" value="{{ config['General']['gemini_api_key'] }}"></div>
-            <div class="settings-item with-button">
-                <div style="display: flex; flex-direction: column;">
+            <div class="settings-item full-width" id="gemini_api_key_item"><label for="gemini_api_key">Gemini API Key:</label><input type="password" id="gemini_api_key" name="gemini_api_key" value="{{ config['General']['gemini_api_key'] }}"></div>
+            <div class="settings-item with-button full-width">
+                <div>
                     <label for="model_name_select">Model:</label>
                     <select id="model_name_select" name="model_name_select">
                         <option value="{{ config['Agent']['model_name'] }}">{{ config['Agent']['model_name'] }}</option>
                     </select>
                 </div>
-                <button id="fetch-models-btn" style="width: auto; padding: 8px 12px; margin-left: 8px;">Fetch</button>
+                <button id="fetch-models-btn">Fetch</button>
             </div>
-            <div class="settings-item"><label for="max_steps">Max Steps:</label><input type="number" id="max_steps" name="max_steps" value="{{ config['Agent']['max_steps'] }}"></div>
-            <div class="settings-item"><label id="agent-status-label" class="status-label">&nbsp;</label><button id="save-agent-btn">Save</button></div>
+            <div class="settings-item">
+                <label for="max_steps">Max Steps:</label>
+                <input type="number" id="max_steps" name="max_steps" value="{{ config['Agent']['max_steps'] }}">
+            </div>
+            <div class="settings-item">
+                <label for="summarization_threshold">Summarize after (chars):</label>
+                <input type="number" id="summarization_threshold" name="summarization_threshold" value="{{ config['Agent']['summarization_threshold'] }}">
+                <label style="font-size: 11px; color: #888; margin-top: 2px;">Set to 0 to disable</label>
+            </div>
+            <div class="settings-item full-width">
+                <label id="agent-status-label" class="status-label">&nbsp;</label>
+                <button id="save-agent-btn">Save</button>
+            </div>
         </fieldset>
     </div>
     <div id="system-modal-overlay" class="modal-overlay"></div>
     <div id="system-modal" class="modal-content">
         <span class="modal-close-btn" data-modal-id="system">&times;</span>
         <h2>Remote System Connection</h2>
-        <fieldset class="modal-fieldset">
+        <fieldset class="modal-fieldset" style="display: flex; flex-wrap: wrap;">
             <div class="settings-item"><label for="connection_history">History:</label><select id="connection_history" name="connection_history"></select></div>
             <div class="settings-item"><label>&nbsp;</label><button id="delete-connection-btn">Delete</button></div>
             <div class="settings-item"><label for="vm_ip">System IP:</label><input type="text" id="vm_ip" name="vm_ip" value="{{ config['System']['ip_address'] }}"></div>
             <div class="settings-item"><label for="vm_user">Username:</label><input type="text" id="vm_user" name="vm_user" value="{{ config['System']['username'] }}"></div>
             <div class="settings-item"><label for="vm_password">User Password:</label><input type="password" id="vm_password" name="vm_password" placeholder="For key deployment"></div>
-            <div class="settings-item" style="width: 100%; flex-direction: column; align-items: stretch; margin-top: 15px;">
+            <div class="settings-item full-width" style="flex-direction: column; align-items: stretch; margin-top: 15px;">
                 <label for="public_key_display">Agent's Public Key (copy to remote system's ~/.ssh/authorized_keys)</label>
                 <textarea id="public_key_display" readonly style="height: 60px; background-color: #111; color: #a9a9a9; resize: vertical;"></textarea>
                 <button id="copy-key-btn" style="width: 120px; margin-top: 5px; align-self: flex-end; background-color: #5c5c5c; padding: 8px;">Copy Key</button>
             </div>
-            <div class="settings-item" style="width: 100%; margin-top: 10px;"><label id="system-status-label" class="status-label">&nbsp;</label><button id="save-system-btn">Save & Deploy</button></div>
+            <div class="settings-item full-width" style="margin-top: 10px;">
+                <label id="system-status-label" class="status-label">&nbsp;</label>
+                <button id="save-system-btn">Save & Deploy</button>
+            </div>
         </fieldset>
     </div>
     <div id="raw-llm-modal-overlay" class="modal-overlay"></div>
@@ -210,6 +227,28 @@
             </div>
         </div>
     </div>
+    <div id="summarization-prompt-modal-overlay" class="modal-overlay"></div>
+    <div id="summarization-prompt-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="summarization-prompt">&times;</span>
+        <h2>Edit Summarization Prompts</h2>
+        <div class="prompt-editor-container">
+            <div class="prompt-section">
+                <label for="ollama-summarize-prompt-textarea">Ollama Summarize Prompt</label>
+                <textarea id="ollama-summarize-prompt-textarea"></textarea>
+            </div>
+            <div class="prompt-section">
+                <label for="gemini-summarize-prompt-textarea">Gemini Summarize Prompt</label>
+                <textarea id="gemini-summarize-prompt-textarea"></textarea>
+            </div>
+        </div>
+        <div class="prompt-footer">
+            <p class="validation-note">Required: <code>{history}</code>. Recommended: <code>{objective}</code>.</p>
+            <div class="footer-controls">
+                <label id="summarization-prompt-status-label" class="status-label">&nbsp;</label>
+                <button id="save-summarization-prompt-btn" style="width: auto;">Save Prompts</button>
+            </div>
+        </div>
+    </div>
     <div id="approval-modal-overlay" class="modal-overlay"></div>
     <div id="approval-modal" class="modal-content" style="width: 60vw; max-width: 900px;">
         <h2>Confirm Command Execution</h2>
@@ -238,6 +277,17 @@
             <button id="submit-rejection-btn" style="background-color: #0e639c;">Submit Reason</button>
         </div>
     </div>
+    <div id="summarization-modal-overlay" class="modal-overlay"></div>
+    <div id="summarization-modal" class="modal-content">
+        <h2>Memory Limit Warning</h2>
+        <p>Agent Persistent Memory has reached its limit!</p>
+        <p style="margin-top: 10px; color: #c0c0c0;">Continuing with a long history may impact performance. You can summarize the history to condense it, or continue.</p>
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button id="summarize-continue-btn" style="background-color: #5c5c5c;">Continue</button>
+            <button id="summarize-action-btn" style="background-color: #0e639c;">Summarize</button>
+        </div>
+    </div>
+
     <script>
         const socket = io();
     </script>
@@ -290,8 +340,19 @@
         const rejectCommandBtn = document.getElementById('reject-command-btn');
         const rejectionReasonInput = document.getElementById('rejection-reason-input');
         const submitRejectionBtn = document.getElementById('submit-rejection-btn');
-        let originalCommand = '';
+        const summarizeContinueBtn = document.getElementById('summarize-continue-btn');
+        const summarizeActionBtn = document.getElementById('summarize-action-btn');
         
+        const summarizationPromptTrigger = document.getElementById('summarization-prompt-trigger');
+        const summarizationPromptStatusLabel = document.getElementById('summarization-prompt-status-label');
+        const saveSummarizationPromptBtn = document.getElementById('save-summarization-prompt-btn');
+        const ollamaSummarizePromptTextarea = document.getElementById('ollama-summarize-prompt-textarea');
+        const geminiSummarizePromptTextarea = document.getElementById('gemini-summarize-prompt-textarea');
+
+        const manualSummarizeTrigger = document.getElementById('manual-summarize-trigger');
+        const historyCharCount = document.getElementById('history-char-count');
+        let isTaskRunning = false;
+
         function initializeUIState() {
             if (window.location.pathname === '/history') {
                 document.getElementById('nav-history').classList.add('active');
@@ -309,13 +370,9 @@
         }
 
         function toggleProviderFields() {
-            if (providerSelect.value === 'ollama') {
-                ollamaUrlItem.style.display = 'flex';
-                geminiApiKeyItem.style.display = 'none';
-            } else {
-                ollamaUrlItem.style.display = 'none';
-                geminiApiKeyItem.style.display = 'flex';
-            }
+            const provider = providerSelect.value;
+            ollamaUrlItem.style.display = (provider === 'ollama') ? 'flex' : 'none';
+            geminiApiKeyItem.style.display = (provider === 'gemini') ? 'flex' : 'none';
         }
 
         function populateModelDropdown(models, selectedModel) {
@@ -392,6 +449,51 @@
                 });
         });
         document.getElementById('prompt-editor-modal-overlay').addEventListener('click', () => closeModal('prompt-editor'));
+        
+        summarizationPromptTrigger.addEventListener('click', () => {
+            summarizationPromptStatusLabel.textContent = 'Fetching prompts...';
+            summarizationPromptStatusLabel.className = 'status-label';
+            fetch('/get_summarization_prompt')
+                .then(response => response.json())
+                .then(data => {
+                    ollamaSummarizePromptTextarea.value = data.ollama_summarize_prompt;
+                    geminiSummarizePromptTextarea.value = data.gemini_summarize_prompt;
+                    summarizationPromptStatusLabel.textContent = '';
+                    openModal('summarization-prompt');
+                })
+                .catch(err => {
+                    summarizationPromptStatusLabel.textContent = 'Error fetching prompts.';
+                    summarizationPromptStatusLabel.className = 'status-label failure';
+                });
+        });
+
+        saveSummarizationPromptBtn.addEventListener('click', () => {
+            summarizationPromptStatusLabel.textContent = 'Saving...';
+            summarizationPromptStatusLabel.className = 'status-label';
+            const formData = new FormData();
+            formData.append('ollama_summarize_prompt', ollamaSummarizePromptTextarea.value);
+            formData.append('gemini_summarize_prompt', geminiSummarizePromptTextarea.value);
+            fetch('/save_summarization_prompt', { method: 'POST', body: formData })
+                .then(response => response.json().then(data => ({ status: response.status, body: data })))
+                .then(({ status, body }) => {
+                    summarizationPromptStatusLabel.textContent = body.message;
+                    if (status === 200) {
+                        summarizationPromptStatusLabel.className = 'status-label success';
+                        setTimeout(() => { 
+                            closeModal('summarization-prompt');
+                            summarizationPromptStatusLabel.textContent = '';
+                        }, 1500);
+                    } else {
+                        summarizationPromptStatusLabel.className = 'status-label failure';
+                    }
+                })
+                .catch(err => {
+                    summarizationPromptStatusLabel.textContent = 'An unexpected error occurred.';
+                    summarizationPromptStatusLabel.className = 'status-label failure';
+                });
+        });
+        document.getElementById('summarization-prompt-modal-overlay').addEventListener('click', () => closeModal('summarization-prompt'));
+
 
         savePromptsBtn.addEventListener('click', () => {
             promptStatusLabel.textContent = 'Saving...';
@@ -450,6 +552,7 @@
             formData.append('api_url', document.getElementById('ollama_url').value);
             formData.append('gemini_api_key', document.getElementById('gemini_api_key').value);
             formData.append('max_steps', document.getElementById('max_steps').value);
+            formData.append('summarization_threshold', document.getElementById('summarization_threshold').value);
             fetch('/save_agent_settings', { method: 'POST', body: formData })
             .then(response => response.json())
             .then(data => {
@@ -586,6 +689,65 @@
         document.querySelector('.modal-close-btn[data-modal-id="rejection"]').addEventListener('click', () => closeModal('rejection'));
         document.getElementById('rejection-modal-overlay').addEventListener('click', () => closeModal('rejection'));
         document.getElementById('approval-modal-overlay').addEventListener('click', () => { /* Prevent closing by clicking overlay */ });
+
+        socket.on('request_history_summarization', () => {
+            openModal('summarization');
+        });
+
+        summarizeContinueBtn.onclick = () => {
+            socket.emit('submit_summarization_choice', { choice: 'continue' });
+            closeModal('summarization');
+        };
+
+        summarizeActionBtn.onclick = () => {
+            summarizeActionBtn.textContent = 'Summarizing...';
+            summarizeActionBtn.disabled = true;
+            socket.emit('submit_summarization_choice', { choice: 'summarize' });
+            setTimeout(() => {
+                closeModal('summarization');
+                summarizeActionBtn.textContent = 'Summarize';
+                summarizeActionBtn.disabled = false;
+            }, 2000);
+        };
+        
+        manualSummarizeTrigger.addEventListener('click', () => {
+            if (!manualSummarizeTrigger.classList.contains('disabled')) {
+                socket.emit('manual_summarize_request');
+            }
+        });
+
+        socket.on('task_started', () => { 
+            isTaskRunning = true;
+            manualSummarizeTrigger.classList.remove('disabled');
+        });
+        socket.on('task_finished', () => { 
+            isTaskRunning = false;
+            manualSummarizeTrigger.classList.add('disabled');
+            historyCharCount.textContent = '0 chars';
+        });
+
+        socket.on('update_history', msg => {
+            if (historyCharCount) {
+                historyCharCount.textContent = `${msg.data.length} chars`;
+            }
+            const historyTextarea = document.getElementById('history-textarea');
+            if(historyTextarea) {
+                historyTextarea.value = msg.data;
+                historyTextarea.scrollTop = historyTextarea.scrollHeight;
+            }
+        });
+
+        socket.on('initial_state', (data) => {
+            isTaskRunning = data.task_running;
+            if (isTaskRunning) {
+                manualSummarizeTrigger.classList.remove('disabled');
+            } else {
+                manualSummarizeTrigger.classList.add('disabled');
+            }
+            if(historyCharCount) {
+                historyCharCount.textContent = `${data.agent_history.length} chars`;
+            }
+        });
 
         initializeUIState();
     });

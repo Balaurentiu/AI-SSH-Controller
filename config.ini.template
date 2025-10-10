@@ -3,12 +3,14 @@ provider = ollama
 gemini_api_key = 
 
 [Agent]
-model_name = null
+model_name = 
 max_steps = 100
+summarization_mode = manual
+summarization_threshold = 10000
 
 [System]
-ip_address =
-username = root
+ip_address = 
+username = 
 ssh_key_path = /app/keys/id_rsa
 
 [Ollama]
@@ -34,9 +36,9 @@ template = ---
 	Based on the context and objective above, provide your next step. Your entire mission is guided by the rules below.
 	
 	1. Core Strategy: Verify -> Learn -> Act
-	* a) Verify: Always start with safe, read-only commands (`ls`, `pvesm status`) to understand the current state.
+	* a) Verify: Always start with safe, read-only commands to understand the current state.
 	* b) Learn: If a command's syntax is wrong, your immediate next step MUST be to learn its usage with `--help`, `help`, or `man`.
-	* c) Act: Only execute an action (`pct create`) after verifying prerequisites.
+	* c) Act: Only execute an action after verifying prerequisites.
 	* d) Do no assume unverified data, If you have an assumption verify it then act accordingly
 	
 	2. Simplicity Mandate
@@ -44,7 +46,9 @@ template = ---
 	* When writing a file, use a robust command like `printf 'content' > /path/to/file`.
 	
 	3. Recognize Limits
-	* If you are in a deep debugging loop (5-6+ steps on the same sub-problem like networking) and are not making progress, you MUST stop and use the "Failure" report format. It is better to fail honestly than to loop.
+	* a) **If you are in a deep debugging loop (5-6+ steps on the same sub-problem like networking) and are not making progress, you MUST stop and use the "Failure" report format. It is better to fail honestly than to loop.
+	* b) **Critical Loop Detection:** If the same command or a minor variation of it fails with the same error message for 2-3 consecutive steps, you MUST assume your approach is wrong and try a fundamentally different strategy. Do not repeat the failing command.
+	* c) **Pay attention to Summaries:** If the execution history begins with "--- History has been summarized ---", you MUST treat that summary as the primary source of truth. Pay very close attention to its analysis and follow the "Next clear moves" if they are provided. Do not repeat actions that the summary has identified as failures.
 	
 	4. Response Formats
 	* Your response MUST use one of the three formats below.
@@ -107,4 +111,42 @@ template = ---
 	
 	Format 3: Admission (Failure)
 	REPORT: Failed -> [Use this if you are stuck, as per the "Recognize Limits" rule. Explain what was achieved and why you cannot complete the final part]
+
+[OllamaSummarizePrompt]
+template = The following is a long history of an AI agent's interactions with a remote system. The agent's goal is:
+	
+	{objective}
+	
+	Your task is to create a concise summary of this history. The summary MUST be short but MUST preserve the most critical information, key discoveries, and the outcome of the last few steps.
+	The goal is to provide enough context for the AI agent to continue its task logically without the full history.
+	
+	Focus on :
+	- Initial system information discoveries (OS, hardware, etc.).
+	- Major actions taken (e.g., software installed, files created, configurations changed).
+	- Key errors encountered and their resolutions.
+	- The last command state or reason and output
+	
+	Original History:
+	---
+	{history}
+	---
+
+[GeminiSummarizePrompt]
+template = The following is a long history of an AI agent's interactions with a remote system. The agent's goal is:
+	
+	{objective}
+	
+	Your task is to create a concise summary of this history. The summary MUST be short but MUST preserve the most critical information, key discoveries, and the outcome of the last few steps.
+	The goal is to provide enough context for the AI agent to continue its task logically without the full history.
+	
+	Focus on:
+	- Initial system information discoveries (OS, hardware, etc.).
+	- Major actions taken (e.g., software installed, files created, configurations changed).
+	- Key errors encountered and their resolutions.
+	- The final state or output from the last 2-3 commands.
+	
+	Original History:
+	---
+	{history}
+	---
 

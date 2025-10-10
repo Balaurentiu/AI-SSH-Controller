@@ -2,7 +2,7 @@
 import eventlet
 eventlet.monkey_patch()
 
-# --- NOU: Import pentru mecanismul de asteptare ---
+# --- NOU: Import pentru mecanismul de asteptare si timeout ---
 from eventlet.event import Event
 from eventlet.timeout import Timeout
 
@@ -15,14 +15,16 @@ import requests
 import ipaddress
 import subprocess
 import json
-from io import BytesIO
-from flask import Flask, render_template, request, jsonify, send_file
+from io import BytesIO, StringIO
+from flask import Flask, render_template, request, jsonify, send_file, Response
 from flask_socketio import SocketIO
 from langchain_community.llms import Ollama
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 import google.generativeai as genai
 from google.api_core import exceptions as google_exceptions
+import zipfile
+from datetime import datetime
 
 # --- Initializam aplicatia si WebSocket-ul ---
 app = Flask(__name__)
@@ -49,27 +51,31 @@ TASK_PAUSED = False
 CURRENT_OBJECTIVE = ""
 SSH_CONNECTION_STATUS = {"status": "unconfigured", "message": "Not configured"}
 LLM_CONNECTION_STATUS = {"status": "unconfigured", "message": "Not configured"}
+FULL_HISTORY_BACKUPS = [] 
 
-# --- Variabile pentru modul asistat si control dinamic ---
+# --- Variabile pentru control interactiv ---
 USER_APPROVAL_EVENT = None
 USER_RESPONSE = {}
+SUMMARIZATION_EVENT = None
 CURRENT_EXECUTION_MODE = "independent"
+CURRENT_SUMMARIZATION_MODE = "manual"
 
 
 # --- Functii pentru salvarea si incarcarea sesiunii ---
 def save_current_session_to_disk():
-    global AGENT_HISTORY, SYSTEM_OS_INFO, PERSISTENT_VM_OUTPUT, LAST_SESSION
+    global AGENT_HISTORY, SYSTEM_OS_INFO, PERSISTENT_VM_OUTPUT, LAST_SESSION, FULL_HISTORY_BACKUPS
     session_data = {
         'agent_history': AGENT_HISTORY,
         'system_os_info': SYSTEM_OS_INFO,
         'persistent_vm_output': PERSISTENT_VM_OUTPUT,
-        'last_session': LAST_SESSION
+        'last_session': LAST_SESSION,
+        'full_history_backups': FULL_HISTORY_BACKUPS
     }
     with open(SESSION_FILE_PATH, 'w') as f:
         json.dump(session_data, f, indent=4)
 
 def load_session_from_disk():
-    global AGENT_HISTORY, SYSTEM_OS_INFO, PERSISTENT_VM_OUTPUT, LAST_SESSION
+    global AGENT_HISTORY, SYSTEM_OS_INFO, PERSISTENT_VM_OUTPUT, LAST_SESSION, FULL_HISTORY_BACKUPS
     if os.path.exists(SESSION_FILE_PATH):
         try:
             with open(SESSION_FILE_PATH, 'r') as f:
@@ -78,15 +84,17 @@ def load_session_from_disk():
                 SYSTEM_OS_INFO = data.get('system_os_info', "Unknown. The first step should be to determine the OS.")
                 PERSISTENT_VM_OUTPUT = data.get('persistent_vm_output', "")
                 LAST_SESSION = data.get('last_session', { "log": "", "vm_output": "", "final_report": "", "raw_llm_responses": [], "reasoning_log": "" })
+                FULL_HISTORY_BACKUPS = data.get('full_history_backups', [])
         except (json.JSONDecodeError, FileNotFoundError):
             print("Error loading session file, starting with a fresh session.")
             
 def reset_all_memory():
-    global AGENT_HISTORY, SYSTEM_OS_INFO, LAST_SESSION, PERSISTENT_VM_OUTPUT
+    global AGENT_HISTORY, SYSTEM_OS_INFO, LAST_SESSION, PERSISTENT_VM_OUTPUT, FULL_HISTORY_BACKUPS
     AGENT_HISTORY = "No commands have been executed yet."
     SYSTEM_OS_INFO = "Unknown. The first step should be to determine the OS."
     PERSISTENT_VM_OUTPUT = ""
     LAST_SESSION = { "log": "", "vm_output": "", "final_report": "", "raw_llm_responses": [], "reasoning_log": "" }
+    FULL_HISTORY_BACKUPS = []
     if os.path.exists(SESSION_FILE_PATH):
         os.remove(SESSION_FILE_PATH)
         print("Session file deleted.")
@@ -168,7 +176,6 @@ def check_ssh_connection():
 
 
 def generate_new_ssh_key():
-    """Generates a new RSA 4096 bit SSH key pair using Paramiko."""
     private_key_path = os.path.join(KEYS_DIR, 'id_rsa')
     public_key_path = os.path.join(KEYS_DIR, 'id_rsa.pub')
     
@@ -223,15 +230,59 @@ def execute_ssh_command(command: str) -> str:
     except Exception as e: 
         return f"An SSH function exception occurred: {type(e).__name__} - {str(e)}"
 
+def summarize_history(history_to_summarize: str):
+    try:
+        config = get_config()
+        provider = config['General']['provider']
+        model_name = config['Agent']['model_name']
+
+        if provider == 'ollama':
+            llm = Ollama(model=model_name, base_url=config['Ollama']['api_url'], timeout=300)
+            prompt_template_str = config.get('OllamaSummarizePrompt', 'template')
+        elif provider == 'gemini':
+            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=config['General']['gemini_api_key'])
+            prompt_template_str = config.get('GeminiSummarizePrompt', 'template')
+        else:
+            return None
+
+        prompt = PromptTemplate.from_template(prompt_template_str).format(objective=CURRENT_OBJECTIVE, history=history_to_summarize)
+        
+        summary = ""
+        for i in range(10):
+            socketio.emit('agent_log', {'data': f"\n--- (Attempt {i+1}/10) Requesting summary from {provider.capitalize()}... ---"})
+            raw_summary = llm.invoke(prompt)
+            
+            if provider == 'gemini' and hasattr(raw_summary, 'content'):
+                raw_summary = raw_summary.content
+
+            if raw_summary and str(raw_summary).strip():
+                summary = str(raw_summary).strip()
+                break
+            socketio.emit('agent_log', {'data': f"--- (Attempt {i+1}/10) LLM returned an empty summary. Retrying... ---"})
+            time.sleep(2)
+
+        if not summary:
+            error_msg = "--- ERROR: Summarization failed after 10 attempts. History was not altered. ---"
+            socketio.emit('agent_log', {'data': error_msg})
+            return None
+
+        final_summary = f"--- History has been summarized ---\n\n{summary}\n\n--- Resuming task ---"
+        socketio.emit('agent_log', {'data': "--- Summarization complete. ---"})
+        return final_summary
+    except Exception as e:
+        error_msg = f"--- ERROR during summarization: {e} ---"
+        socketio.emit('agent_log', {'data': error_msg})
+        return None
 
 def agent_task_runner(objective: str):
-    global AGENT_HISTORY, LAST_SESSION, PERSISTENT_VM_OUTPUT, TASK_RUNNING, SYSTEM_OS_INFO, TASK_PAUSED, CURRENT_OBJECTIVE, USER_APPROVAL_EVENT, USER_RESPONSE, CURRENT_EXECUTION_MODE
+    global AGENT_HISTORY, LAST_SESSION, PERSISTENT_VM_OUTPUT, TASK_RUNNING, SYSTEM_OS_INFO, TASK_PAUSED, CURRENT_OBJECTIVE, USER_APPROVAL_EVENT, USER_RESPONSE, CURRENT_EXECUTION_MODE, SUMMARIZATION_EVENT, CURRENT_SUMMARIZATION_MODE
     
     CURRENT_OBJECTIVE = objective
 
     try:
         config = get_config()
         PROVIDER, MODEL_NAME, MAX_STEPS = config['General']['provider'], config['Agent']['model_name'], int(config['Agent']['max_steps'])
+        SUMMARIZATION_THRESHOLD = config.getint('Agent', 'summarization_threshold', fallback=15000)
         
         socketio.emit('agent_log', {'data': f"--- Starting Agent with {PROVIDER.capitalize()} ({MODEL_NAME}) ---\nObjective: {CURRENT_OBJECTIVE}"})
             
@@ -248,6 +299,22 @@ def agent_task_runner(objective: str):
         for step_counter in range(1, MAX_STEPS + 1):
             if not TASK_RUNNING: break
             
+            if SUMMARIZATION_THRESHOLD > 0 and len(AGENT_HISTORY) > SUMMARIZATION_THRESHOLD:
+                if CURRENT_SUMMARIZATION_MODE == 'automatic':
+                    socketio.emit('agent_log', {'data': f"\n--- Memory limit ({SUMMARIZATION_THRESHOLD} chars) reached. Starting automatic summarization... ---"})
+                    summary = summarize_history(AGENT_HISTORY)
+                    if summary:
+                        AGENT_HISTORY = summary
+                        socketio.emit('update_history', {'data': AGENT_HISTORY})
+                else: # Manual mode
+                    handle_pause_task()
+                    socketio.emit('request_history_summarization')
+                    
+                    SUMMARIZATION_EVENT = Event()
+                    SUMMARIZATION_EVENT.wait()
+                    
+                    if not TASK_RUNNING: break
+
             while TASK_PAUSED:
                 if not TASK_RUNNING: return
                 socketio.sleep(1)
@@ -333,7 +400,7 @@ def agent_task_runner(objective: str):
                 
                 socketio.emit('awaiting_command_approval', {'command': command, 'reason': reason})
 
-                approval_timeout = 600 # 10 minutes
+                approval_timeout = 600
                 try:
                     USER_APPROVAL_EVENT.wait(timeout=approval_timeout)
                 except Timeout:
@@ -357,7 +424,7 @@ def agent_task_runner(objective: str):
                         )
                     else:
                         socketio.emit('agent_log', {'data': f"--- Command approved by user ---"})
-                else: # Rejected
+                else:
                     rejection_reason = USER_RESPONSE['reason']
                     socketio.emit('agent_log', {'data': f"--- Command rejected by user ---\nReason: {rejection_reason}"})
                     
@@ -458,6 +525,7 @@ def handle_save_agent_settings():
         config['Ollama']['api_url'] = request.form.get('api_url', '')
         config['Agent']['model_name'] = request.form.get('model_name', '').strip()
         config['Agent']['max_steps'] = request.form.get('max_steps', '30').strip()
+        config['Agent']['summarization_threshold'] = request.form.get('summarization_threshold', '15000').strip()
         with open(CONFIG_FILE_PATH, 'w') as f: config.write(f)
         initialize_llm_status()
         return jsonify({'status': 'success', 'message': 'Agent settings saved!'})
@@ -605,40 +673,63 @@ def system_save_task(form_data):
 @app.route('/save_session')
 def save_session():
     try:
-        config = get_config()
-        session_data = {
-            'config': {s: dict(config.items(s)) for s in config.sections()},
-            'history': AGENT_HISTORY,
-            'os_info': SYSTEM_OS_INFO,
-            'reasoning_log': LAST_SESSION.get('reasoning_log', '')
-        }
-        str_io = BytesIO(json.dumps(session_data, indent=4).encode('UTF-8'))
-        return send_file(str_io, mimetype='application/json', as_attachment=True, download_name='agent_session.json')
+        memory_file = BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # --- Corectat scrierea pentru config.ini ---
+            # Obiectul config scrie text, așa că folosim un stream de text in-memory (StringIO).
+            config = get_config()
+            string_io = StringIO()
+            config.write(string_io)
+            # Preluăm string-ul din StringIO și îl encodăm în bytes pentru fișierul zip.
+            zf.writestr('config.ini', string_io.getvalue().encode('utf-8'))
+
+            # --- Corectat scrierea pentru session_data.json ---
+            session_data = {
+                'agent_history': AGENT_HISTORY,
+                'system_os_info': SYSTEM_OS_INFO,
+                'persistent_vm_output': PERSISTENT_VM_OUTPUT,
+                'last_session': LAST_SESSION,
+                'full_history_backups': FULL_HISTORY_BACKUPS
+            }
+            # json.dumps creează un string, pe care trebuie să-l encodăm în bytes.
+            zf.writestr('session_data.json', json.dumps(session_data, indent=4).encode('utf-8'))
+
+        memory_file.seek(0)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return send_file(memory_file, mimetype='application/zip', as_attachment=True, download_name=f'session_{timestamp}.zip')
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/load_session', methods=['POST'])
 def load_session():
-    global AGENT_HISTORY, SYSTEM_OS_INFO, LAST_SESSION, PERSISTENT_VM_OUTPUT, SSH_CONNECTION_STATUS
+    global AGENT_HISTORY, SYSTEM_OS_INFO, LAST_SESSION, PERSISTENT_VM_OUTPUT, SSH_CONNECTION_STATUS, FULL_HISTORY_BACKUPS
     try:
         file = request.files.get('session_file')
-        if not file or file.filename == '': return jsonify({'status': 'error', 'message': 'No file selected'}), 400
-        if file and file.filename.endswith('.json'):
-            data = json.load(file)
-            if not all(k in data for k in ['config', 'history', 'os_info']): raise ValueError("Invalid session file.")
-            AGENT_HISTORY, SYSTEM_OS_INFO = data['history'], data['os_info']
-            config = configparser.ConfigParser(); config.read_dict(data['config'])
+        if not file or not file.filename.endswith('.zip'):
+            return jsonify({'status': 'error', 'message': 'Invalid file type, please upload a .zip session file.'}), 400
+
+        with zipfile.ZipFile(file, 'r') as zf:
+            if 'config.ini' not in zf.namelist() or 'session_data.json' not in zf.namelist():
+                raise ValueError("Invalid session archive: missing required files.")
             
-            config['System']['ssh_key_path'] = os.path.join(KEYS_DIR, 'id_rsa')
-            with open(CONFIG_FILE_PATH, 'w') as f: config.write(f)
+            with zf.open('config.ini') as config_file:
+                with open(CONFIG_FILE_PATH, 'wb') as f:
+                    f.write(config_file.read())
             
-            LAST_SESSION, PERSISTENT_VM_OUTPUT = {k: "" for k in LAST_SESSION}, ""
-            LAST_SESSION['reasoning_log'] = data.get('reasoning_log', '')
-            initialize_ssh_status()
-            initialize_llm_status()
-            return jsonify({'status': 'success', 'message': 'Session loaded.'})
-        return jsonify({'status': 'error', 'message': 'Invalid file type.'}), 400
-    except Exception as e: return jsonify({'status': 'error', 'message': str(e)}), 500
+            with zf.open('session_data.json') as json_file:
+                data = json.load(json_file)
+                AGENT_HISTORY = data.get('agent_history', "No commands have been executed yet.")
+                SYSTEM_OS_INFO = data.get('system_os_info', "Unknown. The first step should be to determine the OS.")
+                PERSISTENT_VM_OUTPUT = data.get('persistent_vm_output', "")
+                LAST_SESSION = data.get('last_session', { "log": "", "vm_output": "", "final_report": "", "raw_llm_responses": [], "reasoning_log": "" })
+                FULL_HISTORY_BACKUPS = data.get('full_history_backups', [])
+
+        initialize_ssh_status()
+        initialize_llm_status()
+        return jsonify({'status': 'success', 'message': 'Session loaded successfully!'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 
 @app.route('/generate_ssh_key', methods=['POST'])
 def generate_ssh_key_route():
@@ -722,6 +813,67 @@ def save_prompts():
     except Exception as e:
         return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {e}'}), 500
 
+@app.route('/get_summarization_prompt')
+def get_summarization_prompt():
+    config = get_config()
+    default_prompt = """The following is a long history of an AI agent's interactions with a remote system. The agent's goal is "{objective}".
+Your task is to create a concise summary of this history. The summary MUST be short but MUST preserve the most critical information, key discoveries, and the outcome of the last few steps. 
+The goal is to provide enough context for the AI agent to continue its task logically without the full history.
+
+Focus on:
+- Initial system information discoveries (OS, hardware, etc.).
+- Major actions taken (e.g., software installed, files created, configurations changed).
+- Key errors encountered and their resolutions.
+- The final state or output from the last 2-3 commands.
+
+Original History:
+---
+{history}
+---
+
+Provide a concise summary below:"""
+    ollama_prompt = config.get('OllamaSummarizePrompt', 'template', fallback=default_prompt)
+    gemini_prompt = config.get('GeminiSummarizePrompt', 'template', fallback=default_prompt)
+    return jsonify({'ollama_summarize_prompt': ollama_prompt, 'gemini_summarize_prompt': gemini_prompt})
+
+@app.route('/save_summarization_prompt', methods=['POST'])
+def save_summarization_prompt():
+    def validate_summarization_prompt(prompt_text):
+        errors = []
+        required_vars = {'history'}
+        matches = re.findall(r'\{(\w+)\}', prompt_text)
+        found_vars = set(matches)
+        missing_vars = required_vars - found_vars
+        if missing_vars:
+            errors.append(f"Missing required variable: {', '.join(sorted(list(missing_vars)))}")
+        
+        return (False, ". ".join(errors)) if errors else (True, "Prompt is valid.")
+
+    try:
+        config = get_config()
+        ollama_prompt = request.form.get('ollama_summarize_prompt')
+        gemini_prompt = request.form.get('gemini_summarize_prompt')
+        
+        is_valid_ollama, msg_ollama = validate_summarization_prompt(ollama_prompt)
+        if not is_valid_ollama:
+            return jsonify({'status': 'error', 'message': f'Ollama Prompt Error: {msg_ollama}'}), 400
+
+        is_valid_gemini, msg_gemini = validate_summarization_prompt(gemini_prompt)
+        if not is_valid_gemini:
+            return jsonify({'status': 'error', 'message': f'Gemini Prompt Error: {msg_gemini}'}), 400
+
+        if not config.has_section('OllamaSummarizePrompt'): config.add_section('OllamaSummarizePrompt')
+        config.set('OllamaSummarizePrompt', 'template', ollama_prompt)
+
+        if not config.has_section('GeminiSummarizePrompt'): config.add_section('GeminiSummarizePrompt')
+        config.set('GeminiSummarizePrompt', 'template', gemini_prompt)
+
+        with open(CONFIG_FILE_PATH, 'w') as f:
+            config.write(f)
+        return jsonify({'status': 'success', 'message': 'Summarization prompts saved successfully!'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {e}'}), 500
+
 @socketio.on('connect')
 def handle_connect():
     socketio.emit('initial_state', {
@@ -737,7 +889,7 @@ def handle_connect():
 
 @socketio.on('execute_task')
 def handle_execute_task(json_data):
-    global LAST_SESSION, TASK_RUNNING, PERSISTENT_VM_OUTPUT, AGENT_HISTORY, TASK_PAUSED, CURRENT_OBJECTIVE, CURRENT_EXECUTION_MODE
+    global LAST_SESSION, TASK_RUNNING, PERSISTENT_VM_OUTPUT, AGENT_HISTORY, TASK_PAUSED, CURRENT_OBJECTIVE, CURRENT_EXECUTION_MODE, CURRENT_SUMMARIZATION_MODE
     if TASK_RUNNING: return
     is_connected, msg = check_ssh_connection()
     if not is_connected: 
@@ -745,8 +897,8 @@ def handle_execute_task(json_data):
         socketio.emit('task_finished'); return
     
     objective = json_data.get('data')
-    mode = json_data.get('mode', 'independent')
-    CURRENT_EXECUTION_MODE = mode
+    CURRENT_EXECUTION_MODE = json_data.get('mode', 'independent')
+    CURRENT_SUMMARIZATION_MODE = json_data.get('summarization_mode', 'manual')
 
     if not objective: 
         socketio.emit('agent_log', {'data': "Objective cannot be empty."}); return
@@ -757,7 +909,7 @@ def handle_execute_task(json_data):
     LAST_SESSION["final_report"] = ""
     LAST_SESSION["raw_llm_responses"] = []
     line_separator = "=" * 50
-    task_separator_msg = f"\n\n{line_separator}\n--- STARTING NEW TASK ---\nObjective: {objective}\nMode: {CURRENT_EXECUTION_MODE.capitalize()}\n{line_separator}\n\n"
+    task_separator_msg = f"\n\n{line_separator}\n--- STARTING NEW TASK ---\nObjective: {objective}\nMode: {CURRENT_EXECUTION_MODE.capitalize()}\nSummarization: {CURRENT_SUMMARIZATION_MODE.capitalize()}\n{line_separator}\n\n"
     PERSISTENT_VM_OUTPUT += task_separator_msg
     LAST_SESSION["log"] += task_separator_msg
     socketio.emit('vm_screen', {'data': task_separator_msg})
@@ -771,13 +923,15 @@ def handle_execute_task(json_data):
 
 @socketio.on('stop_task')
 def handle_stop_task():
-    global TASK_RUNNING, TASK_PAUSED, USER_APPROVAL_EVENT
+    global TASK_RUNNING, TASK_PAUSED, USER_APPROVAL_EVENT, SUMMARIZATION_EVENT
     if TASK_RUNNING: 
         TASK_RUNNING = False
         TASK_PAUSED = False
         socketio.emit('agent_log', {'data': "\n--- STOP signal received. ---"})
         if USER_APPROVAL_EVENT and not USER_APPROVAL_EVENT.ready():
             USER_APPROVAL_EVENT.send(None)
+        if SUMMARIZATION_EVENT and not SUMMARIZATION_EVENT.ready():
+            SUMMARIZATION_EVENT.send(None)
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -828,6 +982,32 @@ def handle_update_execution_mode(data):
     if new_mode in ['independent', 'assisted']:
         CURRENT_EXECUTION_MODE = new_mode
         socketio.emit('agent_log', {'data': f"\n--- Execution mode changed to: {new_mode.capitalize()} ---"})
+
+@socketio.on('submit_summarization_choice')
+def handle_summarization_choice(data):
+    global SUMMARIZATION_EVENT, AGENT_HISTORY, FULL_HISTORY_BACKUPS
+    if SUMMARIZATION_EVENT and not SUMMARIZATION_EVENT.ready():
+        choice = data.get('choice')
+        if choice == 'summarize':
+            FULL_HISTORY_BACKUPS.append(AGENT_HISTORY)
+            summary = summarize_history(AGENT_HISTORY)
+            if summary is not None:
+                AGENT_HISTORY = summary
+                socketio.emit('update_history', {'data': AGENT_HISTORY})
+        
+        SUMMARIZATION_EVENT.send(None)
+
+@socketio.on('manual_summarize_request')
+def handle_manual_summarize_request():
+    global TASK_RUNNING, TASK_PAUSED
+    if TASK_RUNNING and not TASK_PAUSED:
+        handle_pause_task()
+        socketio.emit('request_history_summarization')
+        
+        global SUMMARIZATION_EVENT
+        SUMMARIZATION_EVENT = Event()
+        SUMMARIZATION_EVENT.wait()
+
 
 def initialize_ssh_key_if_needed():
     private_key_path = os.path.join(KEYS_DIR, 'id_rsa')
@@ -880,4 +1060,3 @@ initialize_llm_status()
 
 if __name__ == '__main__':
     socketio.run(app, host='0.0.0.0', port=5000)
-
