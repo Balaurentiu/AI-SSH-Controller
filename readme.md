@@ -4,11 +4,86 @@ AI SSH Controller
 AI SSH Controller is a lightweight web app that allows you to control remote systems via SSH using a web interface and an AI instance.
 You only need to set the objective and the AI will do the work for you.
 
-This project is build entirely using AI for coding. I am not a programmer. My coding skills are at "Hello world!" level.
+This project is build entirely using AI for coding. I am not a programmer.
 Feel free to improve it or modify it as you like.
 
-Installation Guide
+Description:
+==============
+
+Core Application Functions
+----------------------------
+AI Agent Core: The backend is powered by a Python Flask application that uses the Langchain library to interact with Large Language Models (LLMs). It supports both local models via Ollama and remote APIs like Gemini. The agent is designed to be methodical, operating on a "Verify -> Learn -> Act" strategy defined in its prompt templates.
+
+Remote System Connectivity: The agent connects to a remote target system securely using SSH with key-based authentication. The application includes features to generate SSH key pairs, deploy the public key to a remote machine using a password, and manage connection details for different systems.
+
+Stateful Session Management: The agent maintains a persistent memory of its actions and their outcomes (AGENT_HISTORY). The entire session, including configuration, command history, and logs, can be saved to a .zip archive and loaded later, allowing for task interruption and resumption.
+
+Dynamic Prompt Engineering: Users can modify the instruction templates (prompts) used by the AI agent directly from the web interface. This allows for fine-tuning the agent's behavior, strategy, and response format without altering the core code.
+
+Memory Summarization: To handle long-running tasks and avoid excessive prompt lengths, the application features a memory summarization function. When the history exceeds a configurable threshold, the agent can use an LLM to create a concise summary of its past actions, preserving critical context while reducing token count.
+
+Web Interface Features
+-------------------------
+The web interface is a clean, dark-themed single-page application that provides all necessary controls for managing and monitoring the AI agent.
+
+Main Layout & Navigation
+-------------------------
+Navigation Bar: A simple top bar allows users to switch between "Live Control" and "History & Reports" views. It also contains the "Save Session" and "Load Session" buttons.
+
+Configuration Bar: Below the navigation, a status bar provides quick access to key configuration modals:
+
+Agent & LLM Configuration: For setting the LLM provider (Ollama/Gemini), API endpoints, and model name.
+
+Remote System Connection: For managing SSH connection details like IP address, username, and key deployment.
+
+Prompt Editor: Opens a modal to edit the agent's core instruction templates.
+
+Summarization Prompt: Allows editing the specific prompt used for memory summarization.
+
+"Live Control" View
+------------------------
+This is the main dashboard for task execution, split into two columns:
+
+Left Column (Control & Logging):
+
+Objective Textarea: A field where the user inputs the high-level goal for the agent.
+
+Execution & Summarization Modes: Radio buttons allow the user to select the operational mode before starting a task:
+
+Execution Mode: "Independent" for fully autonomous operation or "Assisted" for manual command approval.
+
+Summarization Mode: "Automatic" for background summarization or "Assisted" for manual triggering.
+
+Control Buttons: The primary action buttons (Execute, Pause, Stop) manage the agent's lifecycle.
+
+Agent Execution Log: A read-only terminal that streams the agent's internal reasoning, chosen commands, and step-by-step progress in real-time.
+
+Right Column (System Output):
+
+Remote System Screen: A live, read-only terminal that displays the raw output from the commands executed by the agent on the remote machine.
+
+"History & Reports" View
+-----------------------------
+This view is for reviewing past activity:
+
+Agent Persistent Memory: A large textarea displaying the complete, unaltered history of all commands and outputs from the current session.
+
+Reset Agent Memory: A button to completely wipe the agent's memory and start fresh.
+
+Toggle Debug View: Opens a modal showing the raw, unparsed responses received from the LLM, which is useful for debugging the agent's behavior.
+
+Interactive Modals
 ------------------
+Command Approval Modal: In "Assisted" mode, this modal pops up to display the agent's reasoning and the exact command it intends to run. The user can edit the command before approving or rejecting it.
+
+Configuration Modals: Clean and well-organized forms for all settings related to the agent, system connection, and prompts.
+
+Confirmation Dialogs: Safety modals appear for critical actions like resetting the agent's memory to prevent accidental data loss.
+
+------------------------------------------------------------------------------------
+
+Installation Guide
+===================
 
 Follow these steps to install and run the AI SSH Controller on a Linux server using Docker.
 
