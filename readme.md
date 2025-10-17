@@ -168,3 +168,11 @@ Explanation:
   3. Rebuild the image:
          `docker build -t ai-agent-controller`
   4. Restart the container using the same docker run command. Your data (keys, configs) will be preserved thanks to the mounted volume.
+
+Screenshots
+===========
+
+  ![Main window](./extra/Main_window.png)
+
+ ![History and reports](./extra/History_and_reports.png)
+ 
