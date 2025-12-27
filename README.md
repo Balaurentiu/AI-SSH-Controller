@@ -76,36 +76,36 @@ All configuration is done through the **web interface** - no need to manually ed
 ### First-Time Setup
 
 1. Open `http://localhost:5000` in your browser
-2. Click the **Settings** icon (⚙️) in the top navigation
-3. Configure each section:
+2. You'll see a **settings bar** below the navigation with configuration cards
+3. Configure each section by clicking on the cards:
 
-   **Agent Configuration:**
-   - LLM Provider (Ollama, Gemini, or Anthropic)
-   - API Key (for Gemini/Anthropic)
-   - Model name (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`)
-   - Max steps, timeouts, and summarization threshold
+   **Agent & LLM Configuration** (click the card):
+   - Select LLM Provider (Ollama, Gemini, or Anthropic)
+   - Enter API Key (for Gemini/Anthropic)
+   - Choose model name (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`)
+   - Set max steps, timeouts, and summarization threshold
+   - Click **Save** to apply
 
-   **System Configuration:**
-   - Target system IP address
-   - SSH username
-   - SSH port (default: 22)
-   - SSH key path (auto-generated if not exists)
+   **Remote System Connection** (click the card):
+   - Enter target system IP address
+   - Enter SSH username
+   - Set SSH port (default: 22)
+   - Configure SSH key path
+   - Click **Save** to apply
+   - Use **Test Connection** to verify
 
-   **Advanced:**
-   - Customize prompts for different scenarios
-   - Adjust validator prompts
-   - Configure summarization behavior
-
-4. Click **Save** to apply settings
-5. Test SSH connection using the "Test Connection" button
+   **Optional - Advanced Settings:**
+   - **Prompt Editor**: Customize agent instruction templates
+   - **Validator Prompt**: Modify command validation rules
+   - **Summarization Prompt**: Adjust history compression behavior
 
 ### SSH Key Setup
 
-The application handles SSH key generation and deployment automatically through the web UI:
+The application handles SSH key generation and deployment automatically:
 
-1. Go to Settings → System Config
+1. Click on the **"Remote System Connection"** card in the settings bar
 2. Enter your target system credentials (IP, username, password)
-3. Click **"Deploy SSH Key"** button
+3. Click the **"Deploy SSH Key"** button
 4. The application will:
    - Generate an SSH key pair if it doesn't exist
    - Automatically deploy the public key to your target system
