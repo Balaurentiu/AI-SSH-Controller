@@ -161,7 +161,9 @@ See [CLAUDE.md](CLAUDE.md) for comprehensive technical documentation including:
 
 ## License
 
-This project is open source and available under the MIT License.
+This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+
+GPL v3 ensures that any modifications or derivative works remain open source and freely available to the community.
 
 ## Contributing
 
