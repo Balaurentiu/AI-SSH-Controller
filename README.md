@@ -101,11 +101,17 @@ All configuration is done through the **web interface** - no need to manually ed
 
 ### SSH Key Setup
 
-The application can automatically generate SSH keys. To deploy them to your target system:
+The application handles SSH key generation and deployment automatically through the web UI:
+
 1. Go to Settings → System Config
-2. Click "Generate SSH Key" (if not already generated)
-3. Copy the public key shown
-4. Add it to `~/.ssh/authorized_keys` on your target system
+2. Enter your target system credentials (IP, username, password)
+3. Click **"Deploy SSH Key"** button
+4. The application will:
+   - Generate an SSH key pair if it doesn't exist
+   - Automatically deploy the public key to your target system
+   - Configure passwordless SSH access
+
+**That's it!** No manual copying or editing of `authorized_keys` files needed.
 
 **Note:** Configuration is automatically saved to `keys/config.ini` for persistence across container restarts.
 
