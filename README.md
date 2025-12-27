@@ -82,17 +82,17 @@ All configuration is done through the **web interface** - no need to manually ed
    **Agent & LLM Configuration** (click the card):
    - Select LLM Provider (Ollama, Gemini, or Anthropic)
    - Enter API Key (for Gemini/Anthropic)
-   - Choose model name (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`)
+   - Click **Fetch Models** to load available models from your provider
+   - Choose model from dropdown (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`)
    - Set max steps, timeouts, and summarization threshold
-   - Click **Save** to apply
+   - Click **Save Agent Config** to apply
 
    **Remote System Connection** (click the card):
    - Enter target system IP address
    - Enter SSH username
    - Set SSH port (default: 22)
    - Configure SSH key path
-   - Click **Save** to apply
-   - Use **Test Connection** to verify
+   - Click **Save & Test Connection** to apply and verify connectivity
 
    **Optional - Advanced Settings:**
    - **Prompt Editor**: Customize agent instruction templates
@@ -124,15 +124,15 @@ The application handles SSH key generation and deployment automatically:
    - Click "Execute Task"
 
 2. **Monitor Execution**:
-   - View real-time logs in the "Agent Execution Log" panel
-   - See command outputs in the "VM Screen" panel
+   - View real-time logs in the "Agent Execution Log (Live)" panel
+   - See command outputs in the "Remote System Screen (Live)" panel
    - Track agent's reasoning and decisions
 
 3. **Interact**:
    - Pause/Resume execution
    - Approve commands in Assisted mode
    - Answer agent questions (if ASK mode enabled)
-   - Manually search history or edit agent memory
+   - Manually search logs or edit agent memory (History & Reports page)
 
 ## Advanced Features
 
@@ -146,7 +146,7 @@ The agent can create files on the remote system with custom content, useful for 
 The agent can adjust command timeouts on a per-step basis for long-running operations.
 
 ### Manual Memory Editing
-Edit the agent's working memory directly via the History tab to guide its behavior.
+Edit the agent's working memory directly via the "History & Reports" page to guide its behavior. Click "Edit Agent Memory" to modify the LLM context.
 
 ## Security Considerations
 
