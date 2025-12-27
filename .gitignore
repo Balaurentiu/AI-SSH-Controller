@@ -46,6 +46,7 @@ connections.json
 # IDE and Editor
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
