@@ -1,0 +1,134 @@
+[General]
+provider = ollama
+gemini_api_key = 
+
+[Agent]
+model_name = llama3:latest
+max_steps = 50
+summarization_threshold = 15000
+command_timeout = 120
+llm_timeout = 120
+
+[System]
+ip_address = 
+username = 
+ssh_port = 22
+ssh_key_path = /mnt/docker-data/PROJECTS/AI-Agent/keys/id_rsa
+
+[Ollama]
+api_url = http://localhost:11434
+
+[OllamaPrompt]
+template = Objective: {objective}
+	History: {history}
+	System: {system_info}
+	
+	You have access to search past execution history using:
+	SRCH: <search query>
+	
+	Use SRCH when you need to recall specific information from earlier in this session, such as:
+	- Previously executed commands and their outputs
+	- Configuration values discovered earlier
+	- Error messages or warnings from past steps
+	- Any information that was in context but may have been summarized
+	
+	The search will find relevant historical entries and add them to your context.
+	
+	Provide COMMAND or SRCH or REPORT:
+
+[GeminiPrompt]
+template = Objective: {objective}
+	History: {history}
+	System: {system_info}
+	
+	You have access to search past execution history using:
+	SRCH: <search query>
+	
+	Use SRCH when you need to recall specific information from earlier in this session, such as:
+	- Previously executed commands and their outputs
+	- Configuration values discovered earlier
+	- Error messages or warnings from past steps
+	- Any information that was in context but may have been summarized
+	
+	The search will find relevant historical entries and add them to your context.
+	
+	Provide COMMAND or SRCH or REPORT:
+
+[OllamaPromptWithAsk]
+template = Objective: {objective}
+	History: {history}
+	System: {system_info}
+	
+	You have access to search past execution history using:
+	SRCH: <search query>
+	
+	Use SRCH when you need to recall specific information from earlier in this session, such as:
+	- Previously executed commands and their outputs
+	- Configuration values discovered earlier
+	- Error messages or warnings from past steps
+	- Any information that was in context but may have been summarized
+	
+	The search will find relevant historical entries and add them to your context.
+	
+	Provide COMMAND or SRCH or REPORT:
+	Or ASK:
+
+[GeminiPromptWithAsk]
+template = Objective: {objective}
+	History: {history}
+	System: {system_info}
+	
+	You have access to search past execution history using:
+	SRCH: <search query>
+	
+	Use SRCH when you need to recall specific information from earlier in this session, such as:
+	- Previously executed commands and their outputs
+	- Configuration values discovered earlier
+	- Error messages or warnings from past steps
+	- Any information that was in context but may have been summarized
+	
+	The search will find relevant historical entries and add them to your context.
+	
+	Provide COMMAND or SRCH or REPORT:
+	Or ASK:
+
+[OllamaSummarizePrompt]
+template = Summarize history based on objective: {objective}
+	History: {history}
+
+[GeminiSummarizePrompt]
+template = Summarize history based on objective: {objective}
+	History: {history}
+
+[OllamaValidatePrompt]
+template = Validate this command for safety and output size.
+	System: {system_info}
+	Sudo Available: {sudo_available}
+	Command: {command}
+	Reason: {reason}
+	Summarization Threshold: {summarization_threshold} chars
+	Command Timeout: {command_timeout} seconds
+	
+	Respond APPROVE or REJECT with reason. Consider:
+	- OS compatibility (Windows vs Linux commands)
+	- Output size (reject if likely > threshold)
+	- Blocking commands (interactive prompts, pagers)
+	- Long-running commands (reject if likely > timeout)
+	- Destructive operations
+
+[GeminiValidatePrompt]
+template = Validate this command for safety and output size.
+	System: {system_info}
+	Sudo Available: {sudo_available}
+	Command: {command}
+	Reason: {reason}
+	Summarization Threshold: {summarization_threshold} chars
+	Command Timeout: {command_timeout} seconds
+	
+	Respond APPROVE or REJECT with reason. Consider:
+	- OS compatibility (Windows vs Linux commands)
+	- Output size (reject if likely > threshold)
+	- Blocking commands (interactive prompts, pagers)
+	- Long-running commands (reject if likely > timeout)
+	- Destructive operations
+

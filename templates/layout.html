@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Agent Controller</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <style>
+        html, body { height: 100%; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #e0e0e0; }
+        body { display: flex; flex-direction: column; }
+        nav { padding: 10px 20px; border-bottom: 1px solid #444; background-color: #1e1e1e; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; }
+        .nav-links a { color: #7aa5d2; text-decoration: none; font-size: 18px; margin-right: 20px; }
+        .nav-links a:hover, .nav-links a.active { text-decoration: underline; color: #fff; }
+        .nav-actions { display: flex; gap: 10px; align-items: center; }
+        .nav-button { padding: 6px 12px; font-size: 14px; line-height: 1.5; border-radius: 4px; cursor: pointer; border: 1px solid #555; color: #d4d4d4; margin: 0; background-color: transparent; text-decoration: none; }
+        #save-session-btn { background-color: #5a3e85; }
+        .load-session-label { background-color: #6c757d; }
+        input[type="file"].hidden-file-input { display: none; }
+        .settings-bar { background-color: #2a2a2d; padding: 5px 20px; border-bottom: 1px solid #444; display: flex; gap: 15px; flex-wrap: wrap; align-items: center; }
+        .config-trigger { border: 1px solid #444; border-radius: 5px; padding: 2px 15px; cursor: pointer; background-color: #3a3a3d; min-width: 240px; width: auto; flex-shrink: 0; transition: background-color 0.2s; }
+        .config-trigger:hover { background-color: #4a4a4d; }
+        .config-trigger.disabled { opacity: 0.5; cursor: not-allowed; background-color: #333; }
+        .config-trigger.failure .summary-text, .config-trigger.failure h3 { color: #e57373; }
+        .config-trigger.success .summary-text { color: #81c784; }
+        .config-trigger h3 { margin: 5px 0; font-size: 14px; color: #7aa5d2; }
+        .config-trigger .summary-text { font-size: 12px; color: #c0c0c0; font-family: monospace; min-height: 14px; }
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); z-index: 1000; display: none; }
+        .modal-overlay.active { display: block; }
+        .modal-content { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: #2a2a2d; padding: 20px; border-radius: 8px; border: 1px solid #444; z-index: 1001; display: none; max-width: 90%; }
+        .modal-content.active { display: block; }
+        #agent-modal { min-width: 650px; }
+        #system-modal { min-width: 800px; width: auto }
+        #raw-llm-modal { width: 70vw; height: 60vh; max-width: 1200px; /* display controlled by .active */ flex-direction: column; resize: both; overflow: auto; }
+        #raw-llm-modal.active { display: flex; }
+        #raw-llm-textarea { height: 100%; }
+        #prompt-editor-modal, #summarization-prompt-modal, #validator-prompt-modal { width: 80vw; max-width: 1400px; height: 80vh; /* display controlled by .active */ flex-direction: column; }
+        #prompt-editor-modal.active, #summarization-prompt-modal.active, #validator-prompt-modal.active { display: flex; }
+        #summarization-decision-modal { width: 500px; }
+        .prompt-editor-container { display: flex; gap: 20px; flex-grow: 1; min-height: 0; }
+        .prompt-section { display: flex; flex-direction: column; flex: 1; }
+        .prompt-section label { margin-bottom: 10px; font-weight: bold; color: #aaa; }
+        .prompt-section textarea { height: 100%; }
+        .prompt-footer { margin-top: 15px; border-top: 1px solid #444; padding-top: 10px; flex-shrink: 0; }
+        .validation-note { font-size: 12px; color: #aaa; margin: 0 0 10px; }
+        .validation-note code { background-color: #1e1e1e; padding: 2px 4px; border-radius: 3px; }
+        .footer-controls { display: flex; justify-content: flex-end; align-items: center; gap: 15px; }
+        #save-prompts-btn, #save-validator-prompts-btn { width: auto; background-color: #4CAF50; }
+        .modal-content h2 { margin: 0 0 20px 0; color: #7aa5d2; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .modal-close-btn { position: absolute; top: 15px; right: 20px; font-size: 28px; color: #aaa; cursor: pointer; line-height: 1; }
+        .modal-close-btn:hover { color: #fff; }
+        .modal-fieldset { border: none; padding: 0; display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px 20px; }
+        .settings-item { display: flex; flex-direction: column; }
+        .settings-item.full-width { grid-column: 1 / -1; }
+        .settings-item.with-button { flex-direction: row; align-items: flex-end; gap: 10px; }
+        .settings-item.with-button > div { flex-grow: 1; }
+        .settings-item label { font-size: 14px; margin-bottom: 5px; color: #aaa; }
+        .settings-item input, .settings-item select { background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box; width: 100%; }
+        .status-label { font-size: 12px; height: 14px; margin-bottom: 5px; color: #aaa; font-family: monospace; }
+        .status-label.failure { color: #e57373; }
+        .status-label.success { color: #81c784; }
+        .settings-item button { padding: 8px 15px; font-size: 14px; width: auto; margin-top: 0; border-radius: 4px; cursor: pointer; text-align: center; }
+        #save-agent-btn { background-color: #0e639c; }
+        #fetch-models-btn { background-color: #7a57d1; }
+        #save-system-btn { background-color: #2d6a4f; }
+        #delete-connection-btn { background-color: #9c0e35; width: auto; padding: 8px 10px; }
+        .content { display: flex; flex-grow: 1; min-height: 0; }
+        .column { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
+        .column-left { flex: 1; min-width: 300px; }
+        .column-right { flex: 2; }
+        .section { display: flex; flex-direction: column; min-height: 0; }
+        .section.is-flexible { flex-grow: 1; }
+        h2 { color: #7aa5d2; border-bottom: 1px solid #444; padding-bottom: 10px; margin: 0 0 10px 0; flex-shrink: 0; }
+        textarea { width: 100%; flex-grow: 1; box-sizing: border-box; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; padding: 10px; font-family: "Consolas", monospace; font-size: 14px; border-radius: 4px; resize: none; }
+        #objective-textarea { height: 100px; flex-grow: 0; }
+        button { width: 100%; box-sizing: border-box; background-color: #0e639c; color: #d4d4d4; border: 1px solid #555; padding: 10px; font-size: 16px; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+        .controls { display: flex; gap: 10px; }
+        #ask-reason-text, #ask-question-text { background-color: #1e1e1e; border: 1px solid #444; padding: 10px; border-radius: 4px; margin: 0; font-family: monospace; color: #d4d4d4; white-space: pre-wrap; word-wrap: break-word; min-height: 3em; }
+        #ask-objective-textarea { height: 80px; font-size: 14px; margin-bottom: 15px; }
+        #ask-modal { width: 70vw; max-width: 1100px; max-height: 80vh; overflow-y: auto; }
+        #ask-modal.active { display: flex; flex-direction: column; }
+        #ask-modal > div, #ask-modal textarea { flex-shrink: 0; }
+    </style>
+</head>
+<body>
+    <nav>
+       <div class="nav-links"> <a href="/" id="nav-live">Live Control</a> <a href="/history" id="nav-history">History & Reports</a> </div>
+        <div class="nav-actions"> <a href="/save_session" id="save-session-btn" class="nav-button">Save Session</a> <label for="load-session-input" class="nav-button load-session-label">Load Session</label> <input type="file" id="load-session-input" class="hidden-file-input" accept=".zip"> </div>
+    </nav>
+
+    <div class="settings-bar">
+        <div id="agent-config-trigger" class="config-trigger {{ llm_status.status }}"> <h3>Agent & LLM Configuration</h3> <div id="agent-summary" class="summary-text">{{ llm_status.message }}</div> </div>
+        <div id="system-config-trigger" class="config-trigger {{ ssh_status.status }}"> <h3>Remote System Connection</h3> <div id="system-summary" class="summary-text">{{ ssh_status.message }}</div> </div>
+        <div id="prompt-editor-trigger" class="config-trigger"> <h3>Prompt Editor</h3> <div class="summary-text">Modify agent instruction templates</div> </div>
+        <div id="summarization-prompt-trigger" class="config-trigger"> <h3>Summarization Prompt</h3> <div class="summary-text">Modify LLM summarization templates</div> </div>
+        <div id="validator-prompt-trigger" class="config-trigger"> <h3>Validator Prompt</h3> <div class="summary-text">Modify command validation templates</div> </div>
+        <div id="manual-summarize-trigger" class="config-trigger {% if llm_status.status != 'success' %}disabled{% endif %}"> <h3>Manual Summarize</h3> <div id="history-char-count" class="summary-text">0 chars</div> </div>
+    </div>
+    
+    <div class="content"> {% block content %}{% endblock %} </div>
+
+    <div id="objective-empty-modal-overlay" class="modal-overlay"></div>
+    <div id="objective-empty-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="objective-empty">&times;</span> <h2>Objective Missing</h2> <p>Please enter an objective to begin the task.</p> <button onclick="closeModal('objective-empty')" style="width: auto;">OK</button> </div>
+    <div id="reset-confirm-modal-overlay" class="modal-overlay"></div>
+    <div id="reset-confirm-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="reset-confirm">&times;</span> <h2>Confirm Reset</h2> <p>Are you sure you want to reset the agent's entire memory and screen output? This cannot be undone.</p> <div style="display: flex; gap: 10px; margin-top: 20px;"> <button onclick="closeModal('reset-confirm')" style="background-color: #5c5c5c;">Cancel</button> <button onclick="socket.emit('reset_agent', {data: 'reset'}); closeModal('reset-confirm');" style="background-color: #9c0e35;">Reset</button> </div> </div>
+    <div id="approval-modal-overlay" class="modal-overlay" data-persistent="true"></div>
+    <div id="approval-modal" class="modal-content" style="min-width: 700px; max-width: 1000px;"> <span class="modal-close-btn" data-modal-id="approval" style="display: none;">&times;</span> <h2>Command Validation Required</h2> <p style="margin-top: 10px; margin-bottom: 10px;">The agent wants to execute the following command:</p> <div style="margin: 15px 0;"> <div style="color: #aaa; margin-bottom: 5px;">Reason:</div> <div id="command-reason" style="background-color: #1e1e1e; border: 1px solid #444; padding: 10px; border-radius: 4px; margin-bottom: 10px; font-family: monospace; color: #d4d4d4; white-space: pre-wrap; word-wrap: break-word;">Loading...</div> <div style="color: #aaa; margin-bottom: 5px;">Command:</div> <input type="text" id="command-to-approve" style="background-color: #1e1e1e; border: 1px solid #444; padding: 10px; border-radius: 4px; width: 100%; box-sizing: border-box; font-family: monospace; color: #d4d4d4; margin-bottom: 10px;"> <div style="color: #aaa; margin-bottom: 5px;">Modification Reason (optional - explain why you modified the command):</div> <textarea id="command-modification-reason" placeholder="Enter reason for modification if you changed the command..." style="background-color: #1e1e1e; border: 1px solid #444; padding: 10px; border-radius: 4px; width: 100%; box-sizing: border-box; font-family: monospace; color: #d4d4d4; height: 60px; resize: vertical;"></textarea> </div> <div style="display: flex; gap: 10px;"> <button id="approve-command-btn" onclick="socket.emit('approve_command', { approved: true, command: document.getElementById('command-to-approve').value, modification_reason: document.getElementById('command-modification-reason').value}); document.getElementById('command-modification-reason').value=''; closeModal('approval');" style="background-color: #4CAF50;">Approve & Execute</button> <button onclick="showModal('rejection');" style="background-color: #FF5733;">Reject</button> </div> </div>
+    <div id="rejection-modal-overlay" class="modal-overlay" data-persistent="true"></div>
+    <div id="rejection-modal" class="modal-content" style="min-width: 400px;"> <span class="modal-close-btn" data-modal-id="rejection" style="display: none;">&times;</span> <h2>Provide Rejection Reason</h2> <textarea id="rejection-reason" placeholder="Enter reason for rejection..." style="width: 100%; height: 100px; margin-top: 10px;"></textarea> <button onclick="socket.emit('approve_command', { approved: false, reason: document.getElementById('rejection-reason').value}); document.getElementById('rejection-reason').value=''; closeModal('rejection'); closeModal('approval');" style="background-color: #FF5733;">Submit Rejection</button> </div>
+
+    <!-- Enhanced Ask Modal with Stop Task button -->
+    <div id="ask-modal-overlay" class="modal-overlay" data-persistent="true"></div>
+    <div id="ask-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="ask" style="display: none;">&times;</span> 
+        <h2>Agent is Requesting Information</h2> 
+        <p style="margin-top: 10px; margin-bottom: 10px;">The agent needs clarification:</p> 
+        <div style="margin: 15px 0;"> 
+            <div style="color: #aaa; margin-bottom: 5px;">Reason:</div> 
+            <div id="ask-reason-text">Loading...</div> 
+            <div style="color: #aaa; margin-bottom: 5px; margin-top: 15px;">Question:</div> 
+            <div id="ask-question-text">Loading...</div> 
+        </div> 
+        <div style="margin-top: 20px;"> 
+            <div style="color: #aaa; margin-bottom: 5px;">Current Objective (you can modify if needed):</div> 
+            <textarea id="ask-objective-textarea">Loading...</textarea> 
+            <div style="color: #aaa; margin-bottom: 5px;">Your Answer:</div> 
+            <textarea id="user-answer-textarea" placeholder="Type your response here..." style="width: 100%; height: 100px;"></textarea> 
+        </div> 
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+            <button onclick="socket.emit('provide_answer', { answer: document.getElementById('user-answer-textarea').value, objective: document.getElementById('ask-objective-textarea').value}); document.getElementById('user-answer-textarea').value=''; closeModal('ask');" style="background-color: #4CAF50; flex: 1;">Submit Answer</button>
+            <button onclick="socket.emit('stop_task'); closeModal('ask');" style="background-color: #c0392b; flex: 1;">Stop Task</button>
+        </div>
+    </div>
+    
+    <!-- Enhanced Summarization Decision Modal -->
+    <div id="summarization-decision-modal-overlay" class="modal-overlay"></div>
+    <div id="summarization-decision-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="summarization-decision">&times;</span>
+        <h2>History Summarization Required</h2>
+        <p>The agent history has reached <span id="current-history-chars">0</span> characters.</p>
+        <p>Current threshold: <span id="current-threshold-display">15000</span> characters.</p>
+        <div style="margin: 20px 0;">
+            <label for="new-threshold-input" style="display: block; color: #aaa; margin-bottom: 5px;">Update threshold (optional):</label>
+            <input type="number" id="new-threshold-input" min="1000" max="100000" style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px;">
+        </div>
+        <div style="display: flex; gap: 10px;">
+            <button onclick="handleSummarizationDecision(true);" style="background-color: #4CAF50; flex: 1;">Summarize Now</button>
+            <button onclick="handleSummarizationDecision(false);" style="background-color: #e67e22; flex: 1;">Continue Without Summarizing</button>
+        </div>
+    </div>
+    
+    <div id="agent-modal-overlay" class="modal-overlay"></div>
+    <div id="agent-modal" class="modal-content"> 
+        <span class="modal-close-btn" data-modal-id="agent">&times;</span> 
+        <h2>Agent & LLM Configuration</h2> 
+        <fieldset class="modal-fieldset"> 
+            <div class="settings-item"> 
+                <label for="provider-select">Provider:</label> 
+                <select id="provider-select">
+                    <option value="ollama">Ollama (Local)</option>
+                    <option value="gemini">Gemini (Cloud)</option>
+                    <option value="anthropic">Anthropic Claude (Cloud)</option>
+                </select> 
+            </div> 
+            <div class="settings-item with-button"> 
+                <div>
+                    <label for="model-select">Model:</label> 
+                    <select id="model-select"></select>
+                </div>
+                <button id="fetch-models-btn">Fetch Models</button>
+            </div> 
+            <div id="gemini-key-div" class="settings-item full-width" style="display: none;">
+                <label for="gemini-key">Gemini API Key:</label>
+                <input type="password" id="gemini-key" placeholder="Enter Gemini API Key">
+            </div>
+            <div id="anthropic-key-div" class="settings-item full-width" style="display: none;">
+                <label for="anthropic-key">Anthropic API Key:</label>
+                <input type="password" id="anthropic-key" placeholder="Enter Anthropic API Key">
+            </div>
+            <div id="ollama-url-div" class="settings-item full-width"> 
+                <label for="ollama-url">API URL:</label> 
+                <div id="ollama-url-status" class="status-label"></div> 
+                <input type="text" id="ollama-url" value="http://localhost:11434"> 
+            </div> 
+            <div class="settings-item"> 
+                <label for="max-steps">Max Steps:</label> 
+                <input type="number" id="max-steps" value="50" min="1" max="500"> 
+            </div> 
+            <div class="settings-item">
+                <label for="summarization-threshold">Summarization Threshold:</label>
+                <input type="number" id="summarization-threshold" value="15000" min="0" max="100000">
+            </div>
+            <div class="settings-item">
+                <label for="llm-timeout">LLM Response Timeout (seconds):</label>
+                <input type="number" id="llm-timeout" value="120" min="30" max="600">
+            </div>
+        </fieldset>
+        <button id="save-agent-btn">Save Agent Configuration</button>
+    </div>
+    
+    <div id="system-modal-overlay" class="modal-overlay"></div>
+    <div id="system-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="system">&times;</span> <h2>Remote System Connection</h2> <div style="display: flex; gap: 20px; align-items: flex-start;"> <div style="flex: 1;"> <h3 style="margin-top: 0; font-size: 16px; color: #7aa5d2;">Saved Connections</h3> <select id="saved-connections-select" size="6" style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 5px; font-family: monospace; min-height: 150px;"> <option value="">-- No saved connections --</option> </select> <div style="display: flex; gap: 10px; margin-top: 10px;"> <button id="load-connection-btn" style="background-color: #0e639c;">Load</button> <button id="delete-connection-btn">Delete</button> </div> </div> <div style="flex: 2;"> <fieldset class="modal-fieldset"> <div class="settings-item"> <label for="system-ip">System IP:</label> <div id="system-ip-status" class="status-label"></div> <input type="text" id="system-ip" placeholder="192.168.1.100"> </div> <div class="settings-item"> <label for="system-username">Username:</label> <input type="text" id="system-username" placeholder="root"> </div> <div class="settings-item"> <label for="ssh-port">SSH Port:</label> <input type="number" id="ssh-port" placeholder="22" value="22" min="1" max="65535"> </div> <div class="settings-item full-width"> <label for="ssh-key-path">SSH Key Path:</label> <input type="text" id="ssh-key-path" placeholder="/app/keys/id_rsa" readonly style="background-color: #333;"> </div> <div class="settings-item full-width with-button"> <div> <label for="deployment-password">Password (for key deployment):</label> <div id="deployment-status" class="status-label"></div> <input type="password" id="deployment-password" placeholder="Enter password to deploy SSH key"> </div> <button id="deploy-key-btn" style="background-color: #e67e22;">Deploy Key</button> </div> </fieldset> <button id="save-system-btn">Save & Test Connection</button> </div> </div> <div id="deploy-log-area" style="display: none; margin-top: 15px;"> <h3 style="font-size: 14px; color: #7aa5d2; margin-bottom: 10px;">Key Deployment Log</h3> <textarea id="deploy-log-textarea" readonly style="width: 100%; height: 100px; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; padding: 5px; font-family: monospace; font-size: 12px;"></textarea> </div> </div>
+    <div id="prompt-editor-modal-overlay" class="modal-overlay"></div>
+    <div id="prompt-editor-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="prompt-editor">&times;</span> <h2>Agent Instruction Templates</h2> <div style="display: flex; gap: 10px; margin-bottom: 15px;"> <button id="standard-mode-btn" style="flex: 1; background-color: #0e639c;">Standard Mode</button> <button id="ask-mode-btn" style="flex: 1; background-color: #5c5c5c;">Ask Mode</button> </div> <div class="prompt-editor-container"> <div class="prompt-section"> <label for="ollama-prompt-textarea">Ollama Template</label> <textarea id="ollama-prompt-textarea"></textarea> </div> <div class="prompt-section"> <label for="cloud-prompt-textarea">Cloud Model Template</label> <textarea id="cloud-prompt-textarea"></textarea> </div> </div> <div class="prompt-footer"> <p class="validation-note"> Required variables: <code>{objective}</code>, <code>{history}</code>, <code>{system_info}</code><br> Required keywords: <code>COMMAND:</code>, <code>REPORT:</code> (and <code>ASK:</code> for Ask Mode)<br> The agent parses these keywords to understand what action to take. </p> <div class="footer-controls"> <span id="prompt-validation-status" style="color: #aaa; font-size: 14px;"></span> <button id="save-prompts-btn">Save Templates</button> </div> </div> </div>
+    <div id="summarization-prompt-modal-overlay" class="modal-overlay"></div>
+    <div id="summarization-prompt-modal" class="modal-content" style="height: 85vh;">
+        <span class="modal-close-btn" data-modal-id="summarization-prompt">&times;</span>
+        <h2>Summarization Templates</h2>
+
+        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+            <button id="sum-history-mode-btn" style="flex: 1; background-color: #0e639c;">History Summarization</button>
+            <button id="sum-step-mode-btn" style="flex: 1; background-color: #5c5c5c;">Step Output Summarization</button>
+            <button id="sum-search-mode-btn" style="flex: 1; background-color: #5c5c5c;">Search Results Summarization</button>
+        </div>
+
+        <div id="sum-history-container" style="display: flex; flex-direction: column; flex-grow: 1; min-height: 0;">
+            <div class="prompt-editor-container">
+                <div class="prompt-section">
+                    <label for="ollama-summarize-prompt-textarea">Ollama History Template</label>
+                    <textarea id="ollama-summarize-prompt-textarea"></textarea>
+                </div>
+                <div class="prompt-section">
+                    <label for="cloud-summarize-prompt-textarea">Cloud Model History Template</label>
+                    <textarea id="cloud-summarize-prompt-textarea"></textarea>
+                </div>
+            </div>
+            <p class="validation-note" style="margin-top: 10px;">Required variable: <code>{history}</code>. Optional: <code>{objective}</code>.<br>Used when the total context size exceeds the threshold.</p>
+        </div>
+
+        <div id="sum-step-container" style="display: none; flex-direction: column; flex-grow: 1; min-height: 0;">
+            <div class="prompt-editor-container">
+                <div class="prompt-section">
+                    <label for="ollama-step-prompt-textarea">Ollama Step Template</label>
+                    <textarea id="ollama-step-prompt-textarea"></textarea>
+                </div>
+                <div class="prompt-section">
+                    <label for="cloud-step-prompt-textarea">Cloud Model Step Template</label>
+                    <textarea id="cloud-step-prompt-textarea"></textarea>
+                </div>
+            </div>
+            <p class="validation-note" style="margin-top: 10px;">Required variable: <code>{output}</code>.<br>Used when a single command output is too large (Flood Protection).</p>
+        </div>
+
+        <div id="sum-search-container" style="display: none; flex-direction: column; flex-grow: 1; min-height: 0;">
+            <div class="prompt-editor-container">
+                <div class="prompt-section">
+                    <label for="ollama-search-prompt-textarea">Ollama Search Template</label>
+                    <textarea id="ollama-search-prompt-textarea"></textarea>
+                </div>
+                <div class="prompt-section">
+                    <label for="cloud-search-prompt-textarea">Cloud Model Search Template</label>
+                    <textarea id="cloud-search-prompt-textarea"></textarea>
+                </div>
+            </div>
+            <p class="validation-note" style="margin-top: 10px;">Required variable: <code>{results}</code>. Optional: <code>{objective}</code>.<br>Used when summarizing search results (SRCH command).</p>
+        </div>
+
+        <div class="prompt-footer">
+            <div class="footer-controls">
+                <span id="summarization-validation-status" style="color: #aaa; font-size: 14px;"></span>
+                <button id="save-summarization-prompts-btn">Save All Templates</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Validator Prompt Modal -->
+    <div id="validator-prompt-modal-overlay" class="modal-overlay"></div>
+    <div id="validator-prompt-modal" class="modal-content">
+        <span class="modal-close-btn" data-modal-id="validator-prompt">&times;</span>
+        <h2>Command Validator Templates</h2>
+        <div class="prompt-editor-container">
+            <div class="prompt-section">
+                <label for="ollama-validator-prompt-textarea">Ollama Validator Template</label>
+                <textarea id="ollama-validator-prompt-textarea"></textarea>
+            </div>
+            <div class="prompt-section">
+                <label for="cloud-validator-prompt-textarea">Cloud Model Validator Template</label>
+                <textarea id="cloud-validator-prompt-textarea"></textarea>
+            </div>
+        </div>
+        <div class="prompt-footer">
+            <p class="validation-note">
+                Required variable: <code>{command}</code><br>
+                Optional variables: <code>{system_info}</code>, <code>{sudo_available}</code>, <code>{reason}</code>, <code>{summarization_threshold}</code>, <code>{command_timeout}</code><br>
+                Required response format: Must respond with <code>APPROVE</code> or <code>REJECT REASON: [reason]</code><br>
+                This template is used in Independent mode to validate commands before execution.
+            </p>
+            <div class="footer-controls">
+                <span id="validator-validation-status" style="color: #aaa; font-size: 14px;"></span>
+                <button id="save-validator-prompts-btn">Save Validator Templates</button>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+const socket = io();
+function openModal(modalId) { 
+    const modal = document.getElementById(modalId + '-modal');
+    const overlay = document.getElementById(modalId + '-modal-overlay');
+    if (!modal || !overlay) return;
+    modal.classList.add('active');
+    overlay.classList.add('active');
+}
+function closeModal(modalId) {
+    const modal = document.getElementById(modalId + '-modal');
+    const overlay = document.getElementById(modalId + '-modal-overlay');
+    if (!modal || !overlay) return;
+    modal.classList.remove('active');
+    overlay.classList.remove('active');
+}
+function showModal(modalId) { openModal(modalId); }
+
+// Global function for handling summarization decision with threshold update
+function handleSummarizationDecision(doSummarize) {
+    const newThresholdInput = document.getElementById('new-threshold-input');
+    const newThreshold = newThresholdInput.value;
+    
+    socket.emit('summarize_decision', {
+        summarize: doSummarize,
+        new_threshold: newThreshold ? parseInt(newThreshold) : null
+    });
+    
+    closeModal('summarization-decision');
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const agentTrigger = document.getElementById('agent-config-trigger');
+    const systemTrigger = document.getElementById('system-config-trigger');
+    const promptEditorTrigger = document.getElementById('prompt-editor-trigger');
+    const summarizationTrigger = document.getElementById('summarization-prompt-trigger');
+    const validatorTrigger = document.getElementById('validator-prompt-trigger');
+    const manualSummarizeTrigger = document.getElementById('manual-summarize-trigger');
+    const saveSessionBtn = document.getElementById('save-session-btn');
+    const loadSessionInput = document.getElementById('load-session-input');
+
+    document.querySelectorAll('.modal-overlay').forEach(overlay => {
+        overlay.addEventListener('click', function() {
+            // Don't close persistent modals (approval, rejection, ask) on outside click
+            if (this.hasAttribute('data-persistent')) {
+                return;
+            }
+            const modalId = this.id.replace('-modal-overlay', '');
+            closeModal(modalId);
+        });
+    });
+    document.querySelectorAll('.modal-close-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const modalId = this.getAttribute('data-modal-id');
+            closeModal(modalId);
+        });
+    });
+
+    // Agent & LLM configuration modal logic
+    const providerSelect = document.getElementById('provider-select');
+    const modelSelect = document.getElementById('model-select');
+    const geminiKeyDiv = document.getElementById('gemini-key-div');
+    const geminiKey = document.getElementById('gemini-key');
+    const anthropicKeyDiv = document.getElementById('anthropic-key-div');
+    const anthropicKey = document.getElementById('anthropic-key');
+    const ollamaUrlDiv = document.getElementById('ollama-url-div');
+    const ollamaUrl = document.getElementById('ollama-url');
+    const ollamaUrlStatus = document.getElementById('ollama-url-status');
+    const maxSteps = document.getElementById('max-steps');
+    const summarizationThreshold = document.getElementById('summarization-threshold');
+    const llmTimeout = document.getElementById('llm-timeout');
+    const saveAgentBtn = document.getElementById('save-agent-btn');
+    const fetchModelsBtn = document.getElementById('fetch-models-btn');
+    const agentSummary = document.getElementById('agent-summary');
+
+    let ollamaModels = [];
+    let geminiModels = [];
+    let anthropicModels = [];
+    let testingOllama = false;
+    
+    agentTrigger.addEventListener('click', function() { 
+        if(this.classList.contains('disabled')) return;
+        fetch('/get_agent_config').then(res => res.json()).then(data => {
+            providerSelect.value = data.provider;
+            geminiKey.value = data.gemini_api_key || '';
+            anthropicKey.value = data.anthropic_api_key || '';
+            ollamaUrl.value = data.ollama_api_url || 'http://localhost:11434';
+            maxSteps.value = data.max_steps;
+            summarizationThreshold.value = data.summarization_threshold;
+            llmTimeout.value = data.llm_timeout || 120;
+            updateProviderUI();
+            if (data.model_name) {
+                modelSelect.value = data.model_name;
+            }
+        }).catch(e => console.error('Error loading agent config:', e));
+        openModal('agent');
+    });
+
+    providerSelect.addEventListener('change', updateProviderUI);
+
+    function updateProviderUI() {
+        const provider = providerSelect.value;
+        modelSelect.innerHTML = '';
+
+        if (provider === 'ollama') {
+            geminiKeyDiv.style.display = 'none';
+            anthropicKeyDiv.style.display = 'none';
+            ollamaUrlDiv.style.display = '';
+            ollamaModels.forEach(m => {
+                const opt = new Option(m, m);
+                modelSelect.appendChild(opt);
+            });
+            if (ollamaModels.length === 0) {
+                modelSelect.appendChild(new Option('Click Fetch Models to load', ''));
+            }
+        } else if (provider === 'gemini') {
+            geminiKeyDiv.style.display = '';
+            anthropicKeyDiv.style.display = 'none';
+            ollamaUrlDiv.style.display = 'none';
+            geminiModels.forEach(m => {
+                const opt = new Option(m, m);
+                modelSelect.appendChild(opt);
+            });
+            if (geminiModels.length === 0) {
+                modelSelect.appendChild(new Option('Click Fetch Models after entering API Key', ''));
+            }
+        } else if (provider === 'anthropic') {
+            geminiKeyDiv.style.display = 'none';
+            anthropicKeyDiv.style.display = '';
+            ollamaUrlDiv.style.display = 'none';
+            anthropicModels.forEach(m => {
+                const opt = new Option(m, m);
+                modelSelect.appendChild(opt);
+            });
+            if (anthropicModels.length === 0) {
+                modelSelect.appendChild(new Option('Click Fetch Models after entering API Key', ''));
+            }
+        }
+    }
+
+    // Fetch Models button handler
+    fetchModelsBtn.addEventListener('click', function() {
+        const provider = providerSelect.value;
+        
+        if (provider === 'ollama') {
+            ollamaUrlStatus.textContent = 'Fetching models...';
+            ollamaUrlStatus.className = 'status-label';
+            
+            fetch('/test_ollama', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({api_url: ollamaUrl.value})
+            }).then(res => res.json()).then(data => {
+                if (data.status === 'success') {
+                    ollamaUrlStatus.textContent = `✓ Connected (${data.models.length} models found)`;
+                    ollamaUrlStatus.className = 'status-label success';
+                    ollamaModels = data.models;
+                    updateProviderUI();
+                } else {
+                    ollamaUrlStatus.textContent = `✗ ${data.message}`;
+                    ollamaUrlStatus.className = 'status-label failure';
+                    ollamaModels = [];
+                    updateProviderUI();
+                }
+            }).catch(() => {
+                ollamaUrlStatus.textContent = '✗ Connection test failed';
+                ollamaUrlStatus.className = 'status-label failure';
+            });
+        } else if (provider === 'gemini') {
+            if (!geminiKey.value) {
+                alert('Please enter a Gemini API Key first.');
+                return;
+            }
+            
+            fetchModelsBtn.textContent = 'Fetching...';
+            fetch('/test_gemini', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({api_key: geminiKey.value})
+            }).then(res => res.json()).then(data => {
+                fetchModelsBtn.textContent = 'Fetch Models';
+                if (data.status === 'success') {
+                    geminiModels = data.models;
+                    updateProviderUI();
+                    alert(`Found ${data.models.length} Gemini models.`);
+                } else {
+                    geminiModels = [];
+                    updateProviderUI();
+                    alert(`Error: ${data.message}`);
+                }
+            }).catch(() => {
+                fetchModelsBtn.textContent = 'Fetch Models';
+                alert('Failed to fetch Gemini models.');
+            });
+        } else if (provider === 'anthropic') {
+            if (!anthropicKey.value) {
+                alert('Please enter an Anthropic API Key first.');
+                return;
+            }
+
+            fetchModelsBtn.textContent = 'Fetching...';
+            fetch('/test_anthropic', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({api_key: anthropicKey.value})
+            }).then(res => res.json()).then(data => {
+                fetchModelsBtn.textContent = 'Fetch Models';
+                if (data.status === 'success') {
+                    anthropicModels = data.models;
+                    updateProviderUI();
+                    alert(`Found ${data.models.length} Anthropic models.`);
+                } else {
+                    anthropicModels = [];
+                    updateProviderUI();
+                    alert(`Error: ${data.message}`);
+                }
+            }).catch(() => {
+                fetchModelsBtn.textContent = 'Fetch Models';
+                alert('Failed to fetch Anthropic models.');
+            });
+        }
+    });
+
+    // Auto-update summarization threshold when changed in Agent config
+    summarizationThreshold.addEventListener('change', function() {
+        socket.emit('update_summarization_threshold', {threshold: parseInt(this.value)});
+    });
+
+    saveAgentBtn.addEventListener('click', function() {
+        const config = {
+            provider: providerSelect.value,
+            model_name: modelSelect.value,
+            gemini_api_key: geminiKey.value,
+            anthropic_api_key: anthropicKey.value,
+            ollama_api_url: ollamaUrl.value,
+            max_steps: parseInt(maxSteps.value),
+            summarization_threshold: parseInt(summarizationThreshold.value),
+            llm_timeout: parseInt(llmTimeout.value)
+        };
+        
+        fetch('/save_agent_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(config)
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'success') {
+                closeModal('agent');
+                updateAgentTriggerStatus();
+            } else {
+                alert('Error: ' + data.message);
+            }
+        });
+    });
+
+    // System Configuration
+    const systemIp = document.getElementById('system-ip');
+    const systemUsername = document.getElementById('system-username');
+    const sshPort = document.getElementById('ssh-port');
+    const sshKeyPath = document.getElementById('ssh-key-path');
+    const saveSystemBtn = document.getElementById('save-system-btn');
+    const systemSummary = document.getElementById('system-summary');
+    const savedConnectionsSelect = document.getElementById('saved-connections-select');
+    const loadConnectionBtn = document.getElementById('load-connection-btn');
+    const deleteConnectionBtn = document.getElementById('delete-connection-btn');
+    const deploymentPassword = document.getElementById('deployment-password');
+    const deployKeyBtn = document.getElementById('deploy-key-btn');
+    const deployLogArea = document.getElementById('deploy-log-area');
+    const deployLogTextarea = document.getElementById('deploy-log-textarea');
+    const deploymentStatus = document.getElementById('deployment-status');
+
+    systemTrigger.addEventListener('click', function() {
+        if(this.classList.contains('disabled')) return;
+        fetch('/get_system_config').then(res => res.json()).then(data => {
+            systemIp.value = data.ip_address;
+            systemUsername.value = data.username;
+            sshKeyPath.value = data.ssh_key_path;
+            savedConnectionsSelect.innerHTML = '';
+            if (data.saved_connections && data.saved_connections.length > 0) {
+                data.saved_connections.forEach(conn => {
+                    const opt = new Option(`${conn.username}@${conn.ip}`, JSON.stringify(conn));
+                    savedConnectionsSelect.appendChild(opt);
+                });
+            } else {
+                savedConnectionsSelect.appendChild(new Option('-- No saved connections --', ''));
+            }
+        }).catch(e => console.error('Error loading system config:', e));
+        openModal('system');
+    });
+
+    loadConnectionBtn.addEventListener('click', function() {
+        const selectedValue = savedConnectionsSelect.value;
+        if (selectedValue && selectedValue !== '') {
+            try {
+                const conn = JSON.parse(selectedValue);
+                systemIp.value = conn.ip;
+                systemUsername.value = conn.username;
+                sshPort.value = conn.port || 22;
+                sshKeyPath.value = conn.ssh_key_path || '/app/keys/id_rsa';
+            } catch (e) {
+                console.error('Error loading connection:', e);
+            }
+        }
+    });
+
+    deleteConnectionBtn.addEventListener('click', function() {
+        const selectedValue = savedConnectionsSelect.value;
+        if (selectedValue && selectedValue !== '') {
+            try {
+                const conn = JSON.parse(selectedValue);
+                if (confirm(`Delete connection ${conn.username}@${conn.ip}?`)) {
+                    fetch('/delete_connection', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ip: conn.ip, username: conn.username})
+                    }).then(res => res.json()).then(data => {
+                        if (data.status === 'success') {
+                            const selectedOption = savedConnectionsSelect.querySelector('option:checked');
+                            if (selectedOption) selectedOption.remove();
+                            if (savedConnectionsSelect.options.length === 0) {
+                                savedConnectionsSelect.appendChild(new Option('-- No saved connections --', ''));
+                            }
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error('Error deleting connection:', e);
+            }
+        }
+    });
+
+    deployKeyBtn.addEventListener('click', function() {
+        const pwd = deploymentPassword.value;
+        if (!pwd) {
+            alert('Please enter the password for key deployment.');
+            return;
+        }
+        if (!systemIp.value || !systemUsername.value) {
+            alert('Please enter System IP and Username first.');
+            return;
+        }
+        
+        deployLogArea.style.display = 'block';
+        deployLogTextarea.value = 'Starting key deployment...\n';
+        deploymentStatus.textContent = 'Deploying...';
+        deploymentStatus.className = 'status-label';
+        
+        fetch('/deploy_ssh_key', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                ip: systemIp.value,
+                username: systemUsername.value,
+                password: pwd
+            })
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'success') {
+                deploymentStatus.textContent = '✓ Key deployed successfully';
+                deploymentStatus.className = 'status-label success';
+                deployLogTextarea.value += 'Key deployment successful!\n';
+                deploymentPassword.value = '';
+            } else {
+                deploymentStatus.textContent = '✗ Deployment failed';
+                deploymentStatus.className = 'status-label failure';
+                deployLogTextarea.value += `Deployment failed: ${data.message}\n`;
+            }
+        }).catch(e => {
+            deploymentStatus.textContent = '✗ Deployment error';
+            deploymentStatus.className = 'status-label failure';
+            deployLogTextarea.value += `Error: ${e}\n`;
+        });
+    });
+
+    socket.on('deploy_log', (data) => {
+        if (deployLogTextarea) {
+            deployLogTextarea.value += data.data;
+            deployLogTextarea.scrollTop = deployLogTextarea.scrollHeight;
+        }
+    });
+
+    saveSystemBtn.addEventListener('click', function() {
+        const config = {
+            ip_address: systemIp.value,
+            username: systemUsername.value,
+            ssh_port: parseInt(sshPort.value) || 22,
+            ssh_key_path: sshKeyPath.value || '/app/keys/id_rsa'
+        };
+        
+        fetch('/save_system_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(config)
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'success') {
+                closeModal('system');
+                updateSystemTriggerStatus();
+            } else {
+                alert('Error: ' + data.message);
+            }
+        });
+    });
+
+    // Prompt editor logic
+    const standardModeBtn = document.getElementById('standard-mode-btn');
+    const askModeBtn = document.getElementById('ask-mode-btn');
+    const ollamaPromptTextarea = document.getElementById('ollama-prompt-textarea');
+    const cloudPromptTextarea = document.getElementById('cloud-prompt-textarea');
+    const savePromptsBtn = document.getElementById('save-prompts-btn');
+    const promptValidationStatus = document.getElementById('prompt-validation-status');
+    let currentPromptMode = 'standard';
+
+    promptEditorTrigger.addEventListener('click', function() {
+        currentPromptMode = 'standard';
+        standardModeBtn.style.backgroundColor = '#0e639c';
+        askModeBtn.style.backgroundColor = '#5c5c5c';
+        loadPrompts('standard');
+        openModal('prompt-editor');
+    });
+
+    standardModeBtn.addEventListener('click', function() {
+        currentPromptMode = 'standard';
+        this.style.backgroundColor = '#0e639c';
+        askModeBtn.style.backgroundColor = '#5c5c5c';
+        loadPrompts('standard');
+    });
+
+    askModeBtn.addEventListener('click', function() {
+        currentPromptMode = 'ask';
+        this.style.backgroundColor = '#0e639c';
+        standardModeBtn.style.backgroundColor = '#5c5c5c';
+        loadPrompts('ask');
+    });
+
+    function loadPrompts(mode) {
+        fetch(`/get_prompts?mode=${mode}`).then(res => res.json()).then(data => {
+            ollamaPromptTextarea.value = data.ollama_prompt || '';
+            cloudPromptTextarea.value = data.cloud_prompt || '';
+        });
+    }
+
+    savePromptsBtn.addEventListener('click', function() {
+        promptValidationStatus.textContent = 'Validating...';
+        fetch('/save_prompts', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: new URLSearchParams({
+                mode: currentPromptMode,
+                ollama_prompt: ollamaPromptTextarea.value,
+                cloud_prompt: cloudPromptTextarea.value
+            })
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'success') {
+                promptValidationStatus.textContent = '✓ Saved successfully';
+                setTimeout(() => {
+                    promptValidationStatus.textContent = '';
+                    closeModal('prompt-editor');
+                }, 1500);
+            } else {
+                promptValidationStatus.textContent = `✗ ${data.message}`;
+            }
+        });
+    });
+
+    // Summarization prompt logic
+    const ollamaSummarizeTextarea = document.getElementById('ollama-summarize-prompt-textarea');
+    const cloudSummarizeTextarea = document.getElementById('cloud-summarize-prompt-textarea');
+    const ollamaStepTextarea = document.getElementById('ollama-step-prompt-textarea');
+    const cloudStepTextarea = document.getElementById('cloud-step-prompt-textarea');
+    const ollamaSearchTextarea = document.getElementById('ollama-search-prompt-textarea');
+    const cloudSearchTextarea = document.getElementById('cloud-search-prompt-textarea');
+    const saveSummarizationPromptsBtn = document.getElementById('save-summarization-prompts-btn');
+    const summarizationValidationStatus = document.getElementById('summarization-validation-status');
+
+    // New toggle elements
+    const sumHistoryModeBtn = document.getElementById('sum-history-mode-btn');
+    const sumStepModeBtn = document.getElementById('sum-step-mode-btn');
+    const sumSearchModeBtn = document.getElementById('sum-search-mode-btn');
+    const sumHistoryContainer = document.getElementById('sum-history-container');
+    const sumStepContainer = document.getElementById('sum-step-container');
+    const sumSearchContainer = document.getElementById('sum-search-container');
+
+    // Toggle Logic
+    sumHistoryModeBtn.addEventListener('click', () => {
+        sumHistoryModeBtn.style.backgroundColor = '#0e639c';
+        sumStepModeBtn.style.backgroundColor = '#5c5c5c';
+        sumSearchModeBtn.style.backgroundColor = '#5c5c5c';
+        sumHistoryContainer.style.display = 'flex';
+        sumStepContainer.style.display = 'none';
+        sumSearchContainer.style.display = 'none';
+    });
+
+    sumStepModeBtn.addEventListener('click', () => {
+        sumStepModeBtn.style.backgroundColor = '#0e639c';
+        sumHistoryModeBtn.style.backgroundColor = '#5c5c5c';
+        sumSearchModeBtn.style.backgroundColor = '#5c5c5c';
+        sumStepContainer.style.display = 'flex';
+        sumHistoryContainer.style.display = 'none';
+        sumSearchContainer.style.display = 'none';
+    });
+
+    sumSearchModeBtn.addEventListener('click', () => {
+        sumSearchModeBtn.style.backgroundColor = '#0e639c';
+        sumHistoryModeBtn.style.backgroundColor = '#5c5c5c';
+        sumStepModeBtn.style.backgroundColor = '#5c5c5c';
+        sumSearchContainer.style.display = 'flex';
+        sumHistoryContainer.style.display = 'none';
+        sumStepContainer.style.display = 'none';
+    });
+
+    summarizationTrigger.addEventListener('click', function() {
+        // Reset to History view
+        sumHistoryModeBtn.click();
+
+        fetch('/get_summarization_prompt').then(res => res.json()).then(data => {
+            ollamaSummarizeTextarea.value = data.ollama_summarize_prompt || '';
+            cloudSummarizeTextarea.value = data.cloud_summarize_prompt || '';
+            ollamaStepTextarea.value = data.ollama_step_prompt || '';
+            cloudStepTextarea.value = data.cloud_step_prompt || '';
+            ollamaSearchTextarea.value = data.ollama_search_prompt || '';
+            cloudSearchTextarea.value = data.cloud_search_prompt || '';
+        });
+        openModal('summarization-prompt');
+    });
+
+    saveSummarizationPromptsBtn.addEventListener('click', function() {
+        summarizationValidationStatus.textContent = 'Validating...';
+        fetch('/save_summarization_prompt', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: new URLSearchParams({
+                ollama_summarize_prompt: ollamaSummarizeTextarea.value,
+                cloud_summarize_prompt: cloudSummarizeTextarea.value,
+                ollama_step_prompt: ollamaStepTextarea.value,
+                cloud_step_prompt: cloudStepTextarea.value,
+                ollama_search_prompt: ollamaSearchTextarea.value,
+                cloud_search_prompt: cloudSearchTextarea.value
+            })
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'success') {
+                summarizationValidationStatus.textContent = '✓ Saved successfully';
+                setTimeout(() => {
+                    summarizationValidationStatus.textContent = '';
+                    closeModal('summarization-prompt');
+                }, 1500);
+            } else {
+                summarizationValidationStatus.textContent = `✗ ${data.message}`;
+            }
+        });
+    });
+
+    // Validator prompt logic
+    const ollamaValidatorTextarea = document.getElementById('ollama-validator-prompt-textarea');
+    const cloudValidatorTextarea = document.getElementById('cloud-validator-prompt-textarea');
+    const saveValidatorPromptsBtn = document.getElementById('save-validator-prompts-btn');
+    const validatorValidationStatus = document.getElementById('validator-validation-status');
+
+    validatorTrigger.addEventListener('click', function() {
+        fetch('/get_validator_prompt').then(res => res.json()).then(data => {
+            ollamaValidatorTextarea.value = data.ollama_validator_prompt || '';
+            cloudValidatorTextarea.value = data.cloud_validator_prompt || '';
+        });
+        openModal('validator-prompt');
+    });
+
+    saveValidatorPromptsBtn.addEventListener('click', function() {
+        validatorValidationStatus.textContent = 'Validating...';
+        fetch('/save_validator_prompt', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: new URLSearchParams({
+                ollama_validator_prompt: ollamaValidatorTextarea.value,
+                cloud_validator_prompt: cloudValidatorTextarea.value
+            })
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'success') {
+                validatorValidationStatus.textContent = '✓ Saved successfully';
+                setTimeout(() => {
+                    validatorValidationStatus.textContent = '';
+                    closeModal('validator-prompt');
+                }, 1500);
+            } else {
+                validatorValidationStatus.textContent = `✗ ${data.message}`;
+            }
+        });
+    });
+
+    // Manual summarize logic
+    manualSummarizeTrigger.addEventListener('click', function() {
+        if(this.classList.contains('disabled')) {
+            alert('Please configure and test LLM connection first.');
+            return;
+        }
+        if(confirm('Manually summarize the agent history using LLM?')) {
+            socket.emit('manual_summarize');
+        }
+    });
+
+    function updateHistoryCharCount() {
+        fetch('/get_history_stats').then(res => res.json()).then(data => {
+            const charCountEl = document.getElementById('history-char-count');
+            if(charCountEl) {
+                charCountEl.textContent = `${data.char_count} chars`;
+            }
+        });
+    }
+
+    function updateAgentTriggerStatus() {
+        fetch('/get_llm_status').then(res => res.json()).then(data => {
+            agentTrigger.className = 'config-trigger ' + data.status;
+            agentSummary.textContent = data.message;
+            const isSuccess = data.status === 'success';
+            if(manualSummarizeTrigger) {
+                if(isSuccess) {
+                    manualSummarizeTrigger.classList.remove('disabled');
+                } else {
+                    manualSummarizeTrigger.classList.add('disabled');
+                }
+            }
+        });
+    }
+
+    function updateSystemTriggerStatus() {
+        fetch('/get_ssh_status').then(res => res.json()).then(data => {
+            systemTrigger.className = 'config-trigger ' + data.status;
+            systemSummary.textContent = data.message;
+        });
+    }
+
+    socket.on('llm_status_update', (data) => {
+        agentTrigger.className = 'config-trigger ' + data.status;
+        agentSummary.textContent = data.message;
+        const isSuccess = data.status === 'success';
+        if(manualSummarizeTrigger) {
+            if(isSuccess) {
+                manualSummarizeTrigger.classList.remove('disabled');
+            } else {
+                manualSummarizeTrigger.classList.add('disabled');
+            }
+        }
+    });
+
+    socket.on('ssh_status_update', (data) => {
+        systemTrigger.className = 'config-trigger ' + data.status;
+        systemSummary.textContent = data.message;
+    });
+
+    socket.on('update_history', () => {
+        updateHistoryCharCount();
+    });
+
+    socket.on('awaiting_command_approval', (data) => {
+        document.getElementById('command-reason').innerText = data.reason || 'No reason provided';
+        document.getElementById('command-to-approve').value = data.command || '';
+        openModal('approval');
+    });
+
+    socket.on('awaiting_user_answer', (data) => {
+        document.getElementById('ask-reason-text').innerText = data.reason || 'No reason provided';
+        document.getElementById('ask-question-text').innerText = data.question || 'No question provided';
+        document.getElementById('ask-objective-textarea').value = data.objective || '';
+        openModal('ask');
+    });
+
+    socket.on('request_history_summarization', (data) => {
+        // Use enhanced modal with threshold option
+        const currentHistoryChars = document.getElementById('current-history-chars');
+        const currentThresholdDisplay = document.getElementById('current-threshold-display');
+        const newThresholdInput = document.getElementById('new-threshold-input');
+        
+        currentHistoryChars.textContent = data.current_length || '0';
+        currentThresholdDisplay.textContent = data.current_threshold || '15000';
+        newThresholdInput.value = data.current_threshold || '15000';
+        
+        openModal('summarization-decision');
+    });
+
+    const currentPath = window.location.pathname;
+    const navLive = document.getElementById('nav-live');
+    const navHistory = document.getElementById('nav-history');
+    if(navLive && navHistory) {
+        if(currentPath === '/history') {
+            navHistory.classList.add('active');
+            navLive.classList.remove('active');
+        } else {
+            navLive.classList.add('active');
+            navHistory.classList.remove('active');
+        }
+    }
+
+    loadSessionInput.addEventListener('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch('/load_session', {
+            method: 'POST',
+            body: formData
+        }).then(res => res.json()).then(data => {
+            if (data.status === 'success') {
+                alert('Session loaded successfully!');
+                location.reload();
+            } else {
+                alert('Error loading session: ' + data.message);
+            }
+        }).catch(e => {
+            alert('Error uploading file: ' + e);
+        });
+        
+        this.value = '';
+    });
+
+    updateHistoryCharCount();
+    updateAgentTriggerStatus();
+    updateSystemTriggerStatus();
+});
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

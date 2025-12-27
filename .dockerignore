@@ -1,0 +1,17 @@
+#Ignore directorul de chei pentru a nu fi inclus in imagine
+
+keys/
+#Ignora fisierele de sesiune si de conexiuni
+
+session.json
+connections.json
+#Ignora fisierele Python cache
+
+pycache/
+*.pyc
+*.pyo
+*.pyd
+#Ignora fisierele specifice sistemului de operare
+
+.DS_Store
+Thumbs.db

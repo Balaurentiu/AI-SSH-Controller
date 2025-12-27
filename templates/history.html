@@ -1,0 +1,417 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="column" style="flex: 1;">
+    <div class="section is-flexible">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <h2 style="margin: 0;">Agent Memory</h2>
+                <div style="display: flex; gap: 5px;">
+                    <button id="view-llm-context-btn" style="padding: 4px 12px; font-size: 0.85em; background-color: #4CAF50; border: none; color: white; border-radius: 3px; cursor: pointer;">LLM Context</button>
+                    <button id="view-full-log-btn" style="padding: 4px 12px; font-size: 0.85em; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer;">Full Log</button>
+                </div>
+            </div>
+            <div style="display: flex; gap: 5px; align-items: center;">
+                <input type="text" id="search-input" placeholder="Search logs..." style="padding: 5px 10px; background: #2a2a2a; color: #c0c0c0; border: 1px solid #444; border-radius: 3px; width: 200px;">
+                <button id="search-btn" style="padding: 5px 10px; font-size: 0.85em; background-color: #2196F3; border: none; color: white; border-radius: 3px; cursor: pointer;">Search</button>
+                <button id="refresh-history-btn" style="padding: 5px 10px; font-size: 0.85em; background-color: #4CAF50; border: none; color: white; border-radius: 3px; cursor: pointer;">Refresh</button>
+            </div>
+        </div>
+        <div class="controls">
+            <button id="edit-history-button" style="background-color: #3b5998;">Edit Agent Memory</button>
+            <button id="reset-button" style="background-color: #9c0e35;">Reset Agent Memory</button>
+            <button id="debug-button" style="background-color: #5c5c5c;">Toggle Debug View</button>
+        </div>
+        <textarea id="history-textarea" readonly style="margin-top: 10px;"></textarea>
+        <div id="search-results" style="margin-top: 10px; padding: 15px; background: #1e1e1e; border: 2px solid #f39c12; border-radius: 5px; display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px;">
+                <h3 style="margin: 0; color: #4CAF50;">Search Results</h3>
+                <div id="execution-paused-warning" style="display: none; padding: 5px 10px; background-color: #e67e22; color: white; border-radius: 3px; font-size: 0.85em;">
+                    Execution paused - waiting for your decision
+                </div>
+            </div>
+            <div id="search-loading" style="display: none; text-align: center; padding: 20px; color: #aaa;">
+                <span>Searching...</span>
+            </div>
+            <div id="search-results-container" style="max-height: 400px; overflow-y: auto; margin-bottom: 10px;">
+                <pre id="search-results-content" style="color: #c0c0c0; white-space: pre-wrap; word-wrap: break-word; margin: 0;"></pre>
+            </div>
+            <div style="display: flex; gap: 10px;">
+                <button id="add-to-context-btn" style="flex: 1; background-color: #4CAF50; padding: 8px 15px;">Add to Context</button>
+                <button id="close-search-results-btn" style="flex: 1; background-color: #c0392b; padding: 8px 15px;">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="raw-llm-modal-overlay" class="modal-overlay"></div>
+<div id="raw-llm-modal" class="modal-content">
+    <span class="modal-close-btn" data-modal-id="raw-llm">&times;</span>
+    <h2>Raw LLM Responses</h2>
+    <textarea id="raw-llm-textarea" readonly></textarea>
+</div>
+
+<div id="edit-history-modal-overlay" class="modal-overlay"></div>
+<div id="edit-history-modal" class="modal-content" style="width: 70vw; height: 70vh;">
+    <span class="modal-close-btn" data-modal-id="edit-history">&times;</span>
+    <h2>Edit Agent Persistent Memory</h2>
+    <div style="display: flex; flex-direction: column; height: 100%; padding-top: 10px;">
+        <textarea id="edit-history-textarea" style="flex-grow: 1; margin-bottom: 10px; resize: none;"></textarea>
+        <button id="save-history-button" style="width: auto; align-self: flex-end; background-color: #4CAF50; margin-top: 10px;">Save Changes</button>
+    </div>
+</div>
+
+<div id="manual-search-modal-overlay" class="modal-overlay"></div>
+<div id="manual-search-modal" class="modal-content" style="width: 500px;">
+    <span class="modal-close-btn" data-modal-id="manual-search">&times;</span>
+    <h2 style="color: #2196F3;">Search Execution History</h2>
+
+    <div style="margin-bottom: 15px;">
+        <label style="display: block; color: #aaa; margin-bottom: 5px;">Search Query (Keywords):</label>
+        <input type="text" id="modal-search-query" placeholder="e.g. error, password, /etc/config" style="width: 100%; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px;">
+    </div>
+
+    <div style="margin-bottom: 20px;">
+        <label style="display: block; color: #aaa; margin-bottom: 5px;">Reason / Context (Optional but recommended):</label>
+        <textarea id="modal-search-reason" placeholder="Why are you searching? (e.g. To find why the web server failed)" style="width: 100%; height: 80px; padding: 10px; background: #1e1e1e; border: 1px solid #555; color: white; border-radius: 4px; resize: none;"></textarea>
+        <p style="font-size: 12px; color: #666; margin-top: 5px;">Providing a reason helps the AI summarize the results more relevantly.</p>
+    </div>
+
+    <button id="perform-search-btn" style="background-color: #2196F3; width: 100%;">Search Logs</button>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const resetButton = document.getElementById('reset-button');
+    const debugButton = document.getElementById('debug-button');
+    const historyTextarea = document.getElementById('history-textarea');
+    const rawLlmTextarea = document.getElementById('raw-llm-textarea');
+
+    // Elemente Noi pentru Editare
+    const editHistoryButton = document.getElementById('edit-history-button');
+    const editHistoryTextarea = document.getElementById('edit-history-textarea');
+    const saveHistoryButton = document.getElementById('save-history-button');
+    // CORECTIE: Selectat corect elementele pentru închidere
+    const editHistoryCloseBtn = document.querySelector('.modal-close-btn[data-modal-id="edit-history"]');
+    const editHistoryOverlay = document.getElementById('edit-history-modal-overlay');
+
+    // New search elements
+    const searchInput = document.getElementById('search-input');
+    const searchBtn = document.getElementById('search-btn');
+    const refreshHistoryBtn = document.getElementById('refresh-history-btn');
+    const searchResults = document.getElementById('search-results');
+    const searchResultsContent = document.getElementById('search-results-content');
+    const searchLoading = document.getElementById('search-loading');
+    const searchResultsContainer = document.getElementById('search-results-container');
+    const addToContextBtn = document.getElementById('add-to-context-btn');
+    const closeSearchResultsBtn = document.getElementById('close-search-results-btn');
+    const executionPausedWarning = document.getElementById('execution-paused-warning');
+
+    // View switcher buttons
+    const viewLlmContextBtn = document.getElementById('view-llm-context-btn');
+    const viewFullLogBtn = document.getElementById('view-full-log-btn');
+
+    // Track current view mode and search results
+    let currentView = sessionStorage.getItem('historyViewMode') || 'llm_context';
+    let lastSearchResults = '';
+    let lastSearchReason = ''; // NEW: Track the reason
+    let isTaskRunning = false;
+
+    resetButton.onclick = () => {
+        openModal('reset-confirm');
+    };
+
+    debugButton.onclick = () => {
+        openModal('raw-llm');
+    };
+
+    editHistoryButton.onclick = () => {
+        // Auto-Pause: If task is running, request a pause immediately
+        if (isTaskRunning) {
+            console.log("Auto-pausing task for memory editing...");
+            socket.emit('pause_task');
+        }
+
+        editHistoryTextarea.value = historyTextarea.value;
+        // Scroll to top of textarea when opening
+        editHistoryTextarea.scrollTop = 0;
+        openModal('edit-history');
+    };
+
+    saveHistoryButton.onclick = () => {
+        const newHistory = editHistoryTextarea.value;
+        socket.emit('edit_history', { data: newHistory });
+        closeModal('edit-history');
+        const logTextarea = document.getElementById('log-textarea');
+         // Check if logTextarea exists (it's only on the main page)
+        if (logTextarea) {
+             appendAndScroll(logTextarea, "\n--- Agent Memory manually edited by user. ---\n");
+        }
+    };
+
+    // CORECTIE: Adăugat event listeners pentru închiderea noului modal
+    if (editHistoryCloseBtn) {
+        editHistoryCloseBtn.onclick = () => closeModal('edit-history');
+    }
+    if (editHistoryOverlay) {
+        editHistoryOverlay.onclick = () => closeModal('edit-history');
+    }
+
+    socket.on('initial_state', (data) => {
+        // Update local state tracking
+        isTaskRunning = data.task_running;
+
+        // Don't use initial_state for history page - use API endpoints instead
+        // Initial state is for backward compatibility
+        if(rawLlmTextarea) rawLlmTextarea.value = data.raw_llm_responses;
+
+        // Load the correct view after initial state
+        loadAgentMemory();
+    });
+
+    socket.on('update_raw_llm_responses', msg => {
+        if(rawLlmTextarea) {
+            rawLlmTextarea.value = msg.data;
+        }
+    });
+
+    // Helper function for appending to log (if needed on history page in future)
+    const appendAndScroll = (textarea, text) => {
+        if (text === null || text === undefined) return;
+        textarea.value += text;
+        textarea.scrollTop = textarea.scrollHeight;
+    };
+
+    /**
+     * Update view button styles
+     */
+    const updateViewButtons = () => {
+        if (currentView === 'llm_context') {
+            viewLlmContextBtn.style.backgroundColor = '#4CAF50';
+            viewFullLogBtn.style.backgroundColor = '#555';
+        } else {
+            viewLlmContextBtn.style.backgroundColor = '#555';
+            viewFullLogBtn.style.backgroundColor = '#4CAF50';
+        }
+    };
+
+    /**
+     * Load agent memory from API based on current view
+     */
+    const loadAgentMemory = async () => {
+        try {
+            let endpoint = currentView === 'llm_context' ? '/get_agent_memory_log' : '/get_agent_execution_log';
+            const response = await fetch(endpoint);
+            const data = await response.json();
+            if (data.status === 'success') {
+                historyTextarea.value = data.data || 'No data available yet.';
+                historyTextarea.scrollTop = historyTextarea.scrollHeight; // Scroll to bottom to see latest
+            } else {
+                historyTextarea.value = `Error: ${data.message || 'Failed to load data'}`;
+            }
+        } catch (error) {
+            console.error('Error loading agent memory:', error);
+            historyTextarea.value = 'Error loading data. Please try again.';
+        }
+    };
+
+    /**
+     * Function to actually call API with query and reason
+     */
+    const executeSearch = async (query, reason) => {
+        // Save state for "Add to Context" button
+        lastSearchReason = reason;
+
+        // Update the main search input to reflect current search
+        if (searchInput) searchInput.value = query;
+
+        // Show UI Loading
+        if (searchResults) searchResults.style.display = 'block';
+        if (searchLoading) searchLoading.style.display = 'block';
+        if (searchResultsContainer) searchResultsContainer.style.display = 'none';
+        if (addToContextBtn) addToContextBtn.style.display = 'none';
+        if (closeSearchResultsBtn) closeSearchResultsBtn.style.display = 'none';
+
+        if (isTaskRunning && executionPausedWarning) {
+            executionPausedWarning.style.display = 'block';
+        }
+
+        try {
+            // Encode both parameters
+            const response = await fetch(`/search_base_log?q=${encodeURIComponent(query)}&reason=${encodeURIComponent(reason)}`);
+            const data = await response.json();
+
+            if (searchLoading) searchLoading.style.display = 'none';
+            if (searchResultsContainer) searchResultsContainer.style.display = 'block';
+            if (addToContextBtn) addToContextBtn.style.display = 'block';
+            if (closeSearchResultsBtn) closeSearchResultsBtn.style.display = 'block';
+
+            if (data.status === 'success') {
+                lastSearchResults = data.data || 'No results found.';
+                if (searchResultsContent) searchResultsContent.textContent = lastSearchResults;
+            } else {
+                lastSearchResults = `Error: ${data.message}`;
+                if (searchResultsContent) searchResultsContent.textContent = lastSearchResults;
+            }
+        } catch (error) {
+            console.error('Error searching logs:', error);
+            if (searchLoading) searchLoading.style.display = 'none';
+            if (searchResultsContainer) searchResultsContainer.style.display = 'block';
+            lastSearchResults = `Error: ${error.message}`;
+            if (searchResultsContent) searchResultsContent.textContent = lastSearchResults;
+        }
+    };
+
+    // --- New Search Logic ---
+    const manualSearchModalOverlay = document.getElementById('manual-search-modal-overlay');
+    const manualSearchCloseBtn = document.querySelector('.modal-close-btn[data-modal-id="manual-search"]');
+    const performSearchBtn = document.getElementById('perform-search-btn');
+    const modalSearchQuery = document.getElementById('modal-search-query');
+    const modalSearchReason = document.getElementById('modal-search-reason');
+
+    // Open Modal on Search Button Click
+    if (searchBtn) {
+        searchBtn.addEventListener('click', () => {
+            // Pre-fill if user typed in the top bar
+            modalSearchQuery.value = searchInput.value;
+            modalSearchReason.value = '';
+            openModal('manual-search');
+            modalSearchQuery.focus();
+        });
+    }
+
+    // Allow Enter key in top bar to open modal too
+    if (searchInput) {
+        searchInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                modalSearchQuery.value = searchInput.value;
+                openModal('manual-search');
+                modalSearchQuery.focus();
+            }
+        });
+    }
+
+    // Execute Search from Modal
+    if (performSearchBtn) {
+        performSearchBtn.addEventListener('click', () => {
+            const query = modalSearchQuery.value.trim();
+            const reason = modalSearchReason.value.trim() || "User Manual Search";
+
+            if (!query) {
+                alert("Please enter a search query.");
+                return;
+            }
+
+            closeModal('manual-search');
+            executeSearch(query, reason);
+        });
+    }
+
+    // Modal Close Handlers
+    if (manualSearchCloseBtn) manualSearchCloseBtn.onclick = () => closeModal('manual-search');
+    if (manualSearchModalOverlay) manualSearchModalOverlay.onclick = () => closeModal('manual-search');
+
+    if (refreshHistoryBtn) {
+        refreshHistoryBtn.addEventListener('click', () => {
+            loadAgentMemory();
+            searchResults.style.display = 'none'; // Hide search results on refresh
+        });
+    }
+
+    // View switcher event listeners
+    if (viewLlmContextBtn) {
+        viewLlmContextBtn.addEventListener('click', () => {
+            currentView = 'llm_context';
+            sessionStorage.setItem('historyViewMode', 'llm_context');
+            updateViewButtons();
+            loadAgentMemory();
+        });
+    }
+
+    if (viewFullLogBtn) {
+        viewFullLogBtn.addEventListener('click', () => {
+            currentView = 'full_log';
+            sessionStorage.setItem('historyViewMode', 'full_log');
+            updateViewButtons();
+            loadAgentMemory();
+        });
+    }
+
+    // Interactive search results buttons
+    if (addToContextBtn) {
+        addToContextBtn.addEventListener('click', async () => {
+            if (!lastSearchResults) {
+                alert('No search results to add');
+                return;
+            }
+
+            // Get the current query from the input box
+            const currentQuery = searchInput.value.trim();
+
+            try {
+                const response = await fetch('/add_search_to_context', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    // FIX: Send both query and results as required by the backend
+                    body: JSON.stringify({
+                        query: currentQuery || "User Search",
+                        reason: lastSearchReason || "User Manual Search", // NEW: Send reason
+                        results: lastSearchResults
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    searchResults.style.display = 'none';
+                    executionPausedWarning.style.display = 'none';
+                    alert('Search results added to agent context successfully!');
+                    // Reload memory to show updated context
+                    loadAgentMemory();
+                } else {
+                    alert(`Error: ${data.message}`);
+                }
+            } catch (error) {
+                console.error('Error adding search results to context:', error);
+                alert(`Error: ${error.message}`);
+            }
+        });
+    }
+
+    if (closeSearchResultsBtn) {
+        closeSearchResultsBtn.addEventListener('click', () => {
+            searchResults.style.display = 'none';
+            executionPausedWarning.style.display = 'none';
+        });
+    }
+
+    // Listen for task status updates
+    socket.on('task_started', () => {
+        isTaskRunning = true;
+    });
+
+    socket.on('task_finished', () => {
+        isTaskRunning = false;
+        executionPausedWarning.style.display = 'none';
+    });
+
+    socket.on('task_paused', () => {
+        // Optional: Visual feedback could be added here
+        console.log("Task paused confirmed.");
+    });
+
+    // Listen for history updates and reload view
+    socket.on('update_history', (data) => {
+        // Reload the current view to show updated data
+        loadAgentMemory();
+    });
+
+    // Initialize view buttons and load initial agent memory
+    updateViewButtons();
+    loadAgentMemory();
+
+});
+</script>
+{% endblock %}

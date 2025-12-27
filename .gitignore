@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Sensitive Data - API Keys and Credentials
+config.ini
+keys/config.ini
+*.key
+*.pem
+gem.txt
+url.txt
+
+# SSH Keys
+SSH-Keys/
+keys/id_rsa
+keys/id_rsa.pub
+id_rsa
+id_rsa.pub
+
+# Execution History and Logs
+session.json
+keys/execution_log.txt
+keys/execution_log_llm_context.txt
+keys/execution_log_backup_*.txt
+execution_log.txt
+execution_log_llm_context.txt
+logs/
+*.log
+*.jsonl
+
+# Connection History (contains IPs)
+keys/connections.json
+connections.json
+
+# Backups
+*.old
+*.bak
+*.backup
+
+# IDE and Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+venv/
+env/
+ENV/
+
+# Docker volumes data
+*.sqlite
+*.db
+
+# Temporary files
+*.tmp
+temp/
+tmp/
+
+# Keep directory structure but ignore contents
+keys/.gitkeep
+!keys/.gitkeep

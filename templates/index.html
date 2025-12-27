@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI Agent Controller</title>
+</head>
+<body>
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="column column-left">
+    <div class="section">
+        <h2>Objective</h2>
+        <textarea id="objective-textarea" placeholder="Enter your high-level objective here..."></textarea>
+        <!-- Interfata de control (radios) -->
+        <div style="margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; color: #c0c0c0; background-color: #1e1e1e; padding: 10px; border-radius: 4px; border: 1px solid #444;">
+            <strong style="grid-column: 1 / 2;">Execution:</strong>
+            <strong style="grid-column: 2 / 3;">Summarization:</strong>
+            
+            <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="independent" checked> Independent</label>
+            <label style="cursor: pointer;"><input type="radio" name="summarization_mode" value="automatic" checked> Automatic</label>
+            <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="assisted"> Assisted</label>
+            <label style="cursor: pointer;"><input type="radio" name="summarization_mode" value="assisted"> Assisted</label>
+
+            <strong style="grid-column: 1 / 2; margin-top: 10px;">Interaction & Safety:</strong>
+            <strong style="grid-column: 2 / 3; margin-top: 10px;">Command Timeout:</strong>
+
+            <div style="grid-column: 1 / 2; display: flex; flex-direction: column; gap: 5px;">
+                <label style="cursor: pointer;">
+                    <input type="checkbox" id="allow-ask-checkbox" name="allow_ask" value="true"> Allow Agent to Ask
+                </label>
+                <label style="cursor: pointer;">
+                    <input type="checkbox" id="validator-checkbox" name="validator_enabled" value="true" checked> Enable Validator
+                </label>
+            </div>
+            <div style="grid-column: 2 / 3; display: flex; align-items: center; gap: 5px;">
+                <input type="number" id="command-timeout-input" min="10" max="600" value="120" style="width: 60px; padding: 2px 5px; background: #2a2a2a; color: #c0c0c0; border: 1px solid #444; border-radius: 3px;">
+                <span style="font-size: 0.9em;">seconds</span>
+                <button id="update-timeout-btn" style="padding: 2px 8px; font-size: 0.85em; background-color: #4CAF50; border: none; color: white; border-radius: 3px; cursor: pointer;">Update</button>
+                <span id="timeout-countdown" style="font-size: 0.9em; color: #f39c12; margin-left: 5px;"></span>
+            </div>
+        </div>
+        <!-- Butoanele principale de control -->
+        <div class="controls">
+            <button id="execute-button">Execute Task</button>
+            <button id="pause-button" style="display: none; background-color: #e67e22;">Pause</button>
+            <button id="stop-button" style="display: none; background-color: #c0392b;">Stop Task</button>
+        </div>
+    </div>
+    <div class="section is-flexible">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h2 style="margin: 0;">Agent Execution Log (Live)</h2>
+            <div style="display: flex; gap: 5px;">
+                <button id="mode-actions-btn" style="padding: 4px 12px; font-size: 0.85em; background-color: #4CAF50; border: none; color: white; border-radius: 3px; cursor: pointer;">Actions</button>
+                <button id="mode-commands-btn" style="padding: 4px 12px; font-size: 0.85em; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer;">Commands</button>
+            </div>
+        </div>
+        <textarea id="log-textarea" readonly></textarea>
+    </div>
+</div>
+<div class="column column-right">
+    <div class="section is-flexible">
+        <h2>Remote System Screen (Live)</h2>
+        <textarea id="vm-textarea" readonly></textarea>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    // --- Referinte elemente UI ---
+    const executeButton = document.getElementById('execute-button');
+    const stopButton = document.getElementById('stop-button');
+    const pauseButton = document.getElementById('pause-button');
+    const objectiveTextarea = document.getElementById('objective-textarea');
+    const logTextarea = document.getElementById('log-textarea');
+    const vmTextarea = document.getElementById('vm-textarea');
+    const executionModeRadios = document.querySelectorAll('input[name="execution_mode"]');
+    const summarizationModeRadios = document.querySelectorAll('input[name="summarization_mode"]');
+    const allowAskCheckbox = document.getElementById('allow-ask-checkbox');
+    const validatorCheckbox = document.getElementById('validator-checkbox'); // NEW
+    const modeActionsBtn = document.getElementById('mode-actions-btn');
+    const modeCommandsBtn = document.getElementById('mode-commands-btn');
+
+    // Log viewing mode: 'actions' or 'commands'
+    let logViewMode = sessionStorage.getItem('logViewMode') || 'actions';
+
+    // Full log storage for filtering
+    let fullLogContent = '';
+
+    // --- Functii Helper ---
+
+    /**
+     * Update mode switcher button styles
+     */
+    const updateModeButtons = () => {
+        if (logViewMode === 'actions') {
+            modeActionsBtn.style.backgroundColor = '#4CAF50';
+            modeCommandsBtn.style.backgroundColor = '#555';
+        } else {
+            modeActionsBtn.style.backgroundColor = '#555';
+            modeCommandsBtn.style.backgroundColor = '#4CAF50';
+        }
+    };
+
+    /**
+     * Load execution log from backend based on current mode
+     */
+    const loadExecutionLog = async () => {
+        try {
+            // For now, we'll use the initial_state event data
+            // Backend doesn't have separate actions/commands endpoints yet
+            // So we'll filter client-side for now
+            return fullLogContent;
+        } catch (error) {
+            console.error('Error loading execution log:', error);
+            return 'Error loading execution log. Please try again.';
+        }
+    };
+
+    /**
+     * Filter log content based on current view mode
+     */
+    const filterLogByMode = (content) => {
+        if (!content) return '';
+
+        const lines = content.split('\n');
+        let filteredLines = [];
+
+        if (logViewMode === 'commands') {
+            // Commands mode: show clean command list
+            // Format: STEP 1: command, STEP 2: command, etc.
+            let inNewTask = false;
+            let currentStep = null;
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+
+                // Detect task boundaries
+                if (line.includes('=== NEW TASK ===') || line.includes('Objective:')) {
+                    if (!inNewTask) {
+                        filteredLines.push('=== NEW TASK ===');
+                        inNewTask = true;
+                    }
+                }
+                // Detect step number
+                else if (line.startsWith('--- STEP ')) {
+                    const stepMatch = line.match(/--- STEP (\d+)/);
+                    if (stepMatch) {
+                        currentStep = stepMatch[1];
+                    }
+                }
+                // Extract command that was executed
+                else if (currentStep && line.startsWith('Executing Command:')) {
+                    const command = line.replace('Executing Command:', '').trim();
+                    if (command) {
+                        filteredLines.push(`STEP ${currentStep}: ${command}`);
+                        currentStep = null; // Reset after finding command
+                    }
+                }
+                // Detect task end
+                else if (line.includes('REPORT:') || line.includes('=== TASK END ===')) {
+                    if (inNewTask) {
+                        filteredLines.push('=== TASK END ===');
+                        filteredLines.push('');
+                        inNewTask = false;
+                    }
+                }
+            }
+        } else {
+            // Actions mode: show status messages
+            const actionKeywords = [
+                'Thinking...', 'Validating command', 'Command executed',
+                'Command rejected', 'Starting', 'Task finished',
+                'Report generated', 'Auto-Validated', 'Auto-Rejected',
+                'ERROR:', 'CRITICAL:', 'Timeout:', 'EXECUTION PAUSED',
+                'EXECUTION RESUMED', 'Retry'
+            ];
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (actionKeywords.some(keyword => trimmed.includes(keyword))) {
+                    filteredLines.push(trimmed);
+                }
+            }
+        }
+
+        return filteredLines.join('\n');
+    };
+
+    /**
+     * Apply current mode filter to displayed log
+     */
+    const applyModeFilter = () => {
+        logTextarea.value = filterLogByMode(fullLogContent);
+        logTextarea.scrollTop = logTextarea.scrollHeight;
+    };
+
+    /**
+     * Seteaza starea controalelor (disabled/enabled)
+     * @param {boolean} disabled - True pentru a dezactiva, false pentru a activa
+     */
+    const setControlsDisabled = (disabled) => {
+        executionModeRadios.forEach(radio => {
+            radio.disabled = disabled;
+            radio.parentElement.style.color = disabled ? '#666' : '#c0c0c0';
+            radio.parentElement.style.cursor = disabled ? 'not-allowed' : 'pointer';
+        });
+        summarizationModeRadios.forEach(radio => {
+            radio.disabled = disabled;
+            radio.parentElement.style.color = disabled ? '#666' : '#c0c0c0';
+            radio.parentElement.style.cursor = disabled ? 'not-allowed' : 'pointer';
+        });
+        if (allowAskCheckbox) {
+            allowAskCheckbox.disabled = disabled;
+            allowAskCheckbox.parentElement.style.color = disabled ? '#666' : '#c0c0c0';
+            allowAskCheckbox.parentElement.style.cursor = disabled ? 'not-allowed' : 'pointer';
+        }
+        // NEW: Handle Validator checkbox
+        if (validatorCheckbox) {
+            validatorCheckbox.disabled = disabled;
+            validatorCheckbox.parentElement.style.color = disabled ? '#666' : '#c0c0c0';
+            validatorCheckbox.parentElement.style.cursor = disabled ? 'not-allowed' : 'pointer';
+        }
+    };
+
+    /**
+     * Adauga text in log-ul live si deruleaza la final
+     * @param {string} text - Textul de adaugat
+     * @param {boolean} [clear=false] - Daca se sterge continutul inainte de a adauga
+     */
+    const appendLog = (text, clear = false) => {
+        if (text === null || text === undefined) return;
+
+        // Update full log content (unfiltered)
+        if (clear) {
+            fullLogContent = text;
+        } else {
+            fullLogContent += '\n' + text;
+        }
+
+        // Apply mode-specific filter and display
+        logTextarea.value = filterLogByMode(fullLogContent);
+        logTextarea.scrollTop = logTextarea.scrollHeight;
+    };
+    
+    /**
+     * Load VM screen from backend with safety retry.
+     * Prevents wiping the screen if server momentarily returns empty data due to file locking.
+     */
+    const loadVMScreen = async (retryCount = 0) => {
+        try {
+            const response = await fetch('/get_vm_screen_log');
+            const data = await response.json();
+            if (data.status === 'success') {
+                // SAFETY CHECK:
+                // If server returns empty data, but we currently have content displayed,
+                // and this isn't a deliberate reset (we assume resets are handled elsewhere or accepted eventually),
+                // it might be a read error/race condition. Retry a few times before clearing.
+
+                const incomingData = data.data || '';
+                const currentData = vmTextarea.value;
+
+                // If incoming is empty, but current is NOT empty, and we haven't retried enough
+                if (incomingData.trim() === '' && currentData.trim().length > 0 && retryCount < 3) {
+                    console.warn(`Empty VM log received while content exists. Possible race condition. Retrying (${retryCount + 1}/3)...`);
+                    setTimeout(() => loadVMScreen(retryCount + 1), 500); // Retry after 500ms
+                    return;
+                }
+
+                vmTextarea.value = incomingData;
+                vmTextarea.scrollTop = vmTextarea.scrollHeight;
+            }
+        } catch (error) {
+            console.error('Error loading VM screen:', error);
+        }
+    };
+
+    /**
+     * Adauga text (nefiltrat) la ecranul VM si deruleaza
+     * @param {string} text - Textul de adaugat
+     * @param {boolean} [clear=false] - Daca se sterge continutul inainte de a adauga
+     */
+    const appendVMScreen = (text, clear = false) => {
+        if (text === null || text === undefined) return;
+
+        if (clear) {
+            vmTextarea.value = text;
+        } else {
+            vmTextarea.value += text;
+        }
+        vmTextarea.scrollTop = vmTextarea.scrollHeight;
+    };
+
+    // --- Log View Mode Switcher ---
+
+    // Initialize mode buttons
+    updateModeButtons();
+
+    // Mode switcher button handlers
+    modeActionsBtn.addEventListener('click', () => {
+        logViewMode = 'actions';
+        sessionStorage.setItem('logViewMode', 'actions');
+        updateModeButtons();
+        applyModeFilter();
+    });
+
+    modeCommandsBtn.addEventListener('click', () => {
+        logViewMode = 'commands';
+        sessionStorage.setItem('logViewMode', 'commands');
+        updateModeButtons();
+        applyModeFilter();
+    });
+
+    // --- Salvare/Incarcare Setari Sesiune ---
+
+    // Incarca setarile salvate (mod executie, obiectiv)
+    const savedExecMode = sessionStorage.getItem('executionMode');
+    if (savedExecMode) {
+        document.querySelector(`input[name="execution_mode"][value="${savedExecMode}"]`).checked = true;
+    }
+    const savedSummMode = sessionStorage.getItem('summarizationMode');
+    if (savedSummMode) {
+        document.querySelector(`input[name="summarization_mode"][value="${savedSummMode}"]`).checked = true;
+    }
+    const savedAllowAsk = sessionStorage.getItem('allowAsk');
+    if (savedAllowAsk && allowAskCheckbox) {
+        allowAskCheckbox.checked = (savedAllowAsk === 'true');
+    }
+    const savedTimeout = sessionStorage.getItem('commandTimeout');
+    const commandTimeoutInput = document.getElementById('command-timeout-input');
+    const updateTimeoutBtn = document.getElementById('update-timeout-btn');
+    const timeoutCountdown = document.getElementById('timeout-countdown');
+    if (savedTimeout && commandTimeoutInput) {
+        commandTimeoutInput.value = savedTimeout;
+    }
+    const savedObjective = sessionStorage.getItem('savedObjective');
+    if (savedObjective) {
+        objectiveTextarea.value = savedObjective;
+    }
+
+    // Salveaza setarile la modificare
+    objectiveTextarea.addEventListener('input', () => {
+        sessionStorage.setItem('savedObjective', objectiveTextarea.value);
+    });
+    if (commandTimeoutInput) {
+        commandTimeoutInput.addEventListener('change', () => {
+            sessionStorage.setItem('commandTimeout', commandTimeoutInput.value);
+        });
+    }
+    executionModeRadios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            const newMode = e.target.value;
+            sessionStorage.setItem('executionMode', newMode);
+            // Daca task-ul e pe pauza, trimitem actualizarea la server
+            if (pauseButton.style.display === 'block' && pauseButton.textContent === 'Resume') {
+                 socket.emit('update_execution_mode', { mode: newMode });
+            }
+        });
+    });
+    summarizationModeRadios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            sessionStorage.setItem('summarizationMode', e.target.value);
+        });
+    });
+    if (allowAskCheckbox) {
+        allowAskCheckbox.addEventListener('change', (e) => {
+            sessionStorage.setItem('allowAsk', e.target.checked);
+        });
+    }
+    if (validatorCheckbox) {
+        validatorCheckbox.addEventListener('change', (e) => {
+            socket.emit('toggle_validator', { enabled: e.target.checked });
+        });
+    }
+
+    // --- Handler-e Butoane ---
+
+    executeButton.onclick = () => {
+        if (objectiveTextarea.value.trim() === "") {
+            openModal('objective-empty');
+            return;
+        }
+        const selectedExecMode = document.querySelector('input[name="execution_mode"]:checked').value;
+        const selectedSummMode = document.querySelector('input[name="summarization_mode"]:checked').value;
+        const allowAsk = allowAskCheckbox ? allowAskCheckbox.checked : false;
+        const commandTimeout = parseInt(document.getElementById('command-timeout-input').value) || 120;
+
+        socket.emit('execute_task', {
+            data: objectiveTextarea.value,
+            mode: selectedExecMode,
+            summarization_mode: selectedSummMode,
+            allow_ask: allowAsk,
+            command_timeout: commandTimeout
+        });
+    };
+
+    stopButton.onclick = () => {
+        // 1. Immediate Visual Feedback
+        stopButton.textContent = "Stopping...";
+        stopButton.disabled = true;
+        stopButton.style.backgroundColor = "#7f8c8d"; // Grey out
+        stopButton.style.cursor = "wait";
+
+        // 2. Send signal
+        socket.emit('stop_task');
+
+        // 3. Cleanup modals
+        closeModal('approval');
+        closeModal('rejection');
+        closeModal('ask');
+    };
+
+    pauseButton.onclick = () => {
+        if (pauseButton.textContent === 'Pause') {
+            socket.emit('pause_task');
+        } else {
+            // Trimitem obiectivul curent in caz ca a fost modificat in pauza
+            socket.emit('resume_task', { data: objectiveTextarea.value });
+        }
+    };
+
+    // Handler pentru Update Timeout
+    if (updateTimeoutBtn) {
+        updateTimeoutBtn.onclick = () => {
+            const newTimeout = parseInt(commandTimeoutInput.value) || 120;
+            sessionStorage.setItem('commandTimeout', newTimeout);
+            socket.emit('update_timeout', { timeout: newTimeout });
+            updateTimeoutBtn.textContent = '✓';
+            updateTimeoutBtn.style.backgroundColor = '#27ae60';
+            setTimeout(() => {
+                updateTimeoutBtn.textContent = 'Update';
+                updateTimeoutBtn.style.backgroundColor = '#4CAF50';
+            }, 1500);
+        };
+    }
+
+    // --- Handler-e SocketIO ---
+
+    socket.on('agent_log', msg => {
+        // Folosim noua functie de filtrare si formatare
+        appendLog(msg.data, msg.clear === true);
+    });
+
+    socket.on('vm_screen', msg => {
+        // Folosim functia de append pentru VM
+        appendVMScreen(msg.data, msg.clear === true);
+    });
+
+    socket.on('task_started', () => {
+        executeButton.style.display = 'none';
+        stopButton.style.display = 'block';
+        pauseButton.style.display = 'block';
+        pauseButton.textContent = 'Pause';
+        pauseButton.style.backgroundColor = '#e67e22'; // Culoare portocalie
+        objectiveTextarea.disabled = true;
+        setControlsDisabled(true);
+
+        // Keep existing logs visible - context persists across tasks
+    });
+
+    socket.on('task_finished', () => {
+        executeButton.style.display = 'block';
+        stopButton.style.display = 'none';
+        pauseButton.style.display = 'none';
+
+        // FIX: Reset Stop Button State
+        stopButton.textContent = "Stop Task";
+        stopButton.disabled = false;
+        stopButton.style.backgroundColor = "#c0392b"; // Restore red color
+        stopButton.style.cursor = "pointer";
+
+        objectiveTextarea.disabled = false;
+        setControlsDisabled(false);
+        closeModal('approval');
+        closeModal('rejection');
+        closeModal('ask');
+    });
+
+    socket.on('task_paused', () => {
+        pauseButton.textContent = 'Resume';
+        pauseButton.style.backgroundColor = '#2ecc71'; // Culoare verde
+        objectiveTextarea.disabled = false; // Permitem editarea obiectivului in pauza
+        setControlsDisabled(false); // Permitem schimbarea modului in pauza
+    });
+
+    socket.on('task_resumed', () => {
+        pauseButton.textContent = 'Pause';
+        pauseButton.style.backgroundColor = '#e67e22'; // Culoare portocalie
+        objectiveTextarea.disabled = true;
+        setControlsDisabled(true);
+    });
+    
+    socket.on('awaiting_user_answer', () => {
+        // Cand agentul intreaba, deblocam campul obiectivului
+        if (objectiveTextarea) {
+            objectiveTextarea.disabled = false;
+        }
+    });
+
+    // --- Command Execution Countdown ---
+    socket.on('command_exec_start', (data) => {
+        if (timeoutCountdown) {
+            timeoutCountdown.textContent = `(${data.timeout}s)`;
+        }
+    });
+
+    socket.on('command_exec_update', (data) => {
+        if (timeoutCountdown) {
+            timeoutCountdown.textContent = `(${data.remaining}s remaining)`;
+        }
+    });
+
+    socket.on('command_exec_done', () => {
+        if (timeoutCountdown) {
+            timeoutCountdown.textContent = '';
+        }
+    });
+
+    socket.on('timeout_updated', (data) => {
+        if (commandTimeoutInput) {
+            commandTimeoutInput.value = data.timeout;
+            sessionStorage.setItem('commandTimeout', data.timeout);
+        }
+        appendLog(`--- Timeout updated to ${data.timeout} seconds ---`);
+    });
+
+    // --- Thinking Indicator with In-Place Timer ---
+    let thinkingLineIndex = -1; // Track where the thinking line is
+
+    socket.on('thinking_start', (data) => {
+        const thinkingText = `Thinking... (${data.timeout}s timeout)`;
+        appendLog(thinkingText);
+        // Remember that the last line is our thinking line
+        const lines = logTextarea.value.split('\n');
+        thinkingLineIndex = lines.length - 1;
+    });
+
+    socket.on('thinking_update', (data) => {
+        if (thinkingLineIndex >= 0) {
+            const lines = logTextarea.value.split('\n');
+            // Update the thinking line in-place
+            lines[thinkingLineIndex] = `Thinking... (${data.remaining}s remaining)`;
+            logTextarea.value = lines.join('\n');
+            logTextarea.scrollTop = logTextarea.scrollHeight;
+        }
+    });
+
+    socket.on('thinking_end', () => {
+        if (thinkingLineIndex >= 0) {
+            // Remove the thinking line
+            const lines = logTextarea.value.split('\n');
+            lines.splice(thinkingLineIndex, 1);
+            logTextarea.value = lines.join('\n');
+            thinkingLineIndex = -1;
+            logTextarea.scrollTop = logTextarea.scrollHeight;
+        }
+    });
+
+    // --- Command Execution Timer with In-Place Countdown ---
+    let commandExecLineIndex = -1; // Track where the command execution line is
+
+    socket.on('command_exec_start', (data) => {
+        const commandText = `Executing command... (${data.timeout}s timeout)`;
+        appendLog(commandText);
+        // Remember that the last line is our command execution line
+        const lines = logTextarea.value.split('\n');
+        commandExecLineIndex = lines.length - 1;
+    });
+
+    socket.on('command_exec_update', (data) => {
+        if (commandExecLineIndex >= 0) {
+            const lines = logTextarea.value.split('\n');
+            // Update the command execution line in-place
+            lines[commandExecLineIndex] = `Executing command... (${data.remaining}s remaining)`;
+            logTextarea.value = lines.join('\n');
+            logTextarea.scrollTop = logTextarea.scrollHeight;
+        }
+    });
+
+    socket.on('command_exec_end', () => {
+        if (commandExecLineIndex >= 0) {
+            // Remove the command execution line
+            const lines = logTextarea.value.split('\n');
+            lines.splice(commandExecLineIndex, 1);
+            logTextarea.value = lines.join('\n');
+            commandExecLineIndex = -1;
+            logTextarea.scrollTop = logTextarea.scrollHeight;
+        }
+    });
+
+    // Handler-ul central pentru starea initiala (la conectare/reconectare)
+    socket.on('initial_state', (data) => {
+        if(data.last_log) {
+            // Folosim functia de logare cu 'clear=true'
+            // Aceasta va filtra, formata (cu timestamp-uri) si afisa log-ul la incarcare
+            appendLog(data.last_log, true);
+        }
+        if(data.vm_output) {
+            // Folosim functia VM cu 'clear=true'
+            appendVMScreen(data.vm_output, true);
+        }
+
+        // Sync Validator Checkbox
+        if (validatorCheckbox && data.validator_enabled !== undefined) {
+            validatorCheckbox.checked = data.validator_enabled;
+        }
+
+        const isPaused = data.task_running && data.task_paused;
+        const isRunning = data.task_running && !data.task_paused;
+
+        if (data.task_running) {
+            executeButton.style.display = 'none';
+            stopButton.style.display = 'block';
+            pauseButton.style.display = 'block';
+            objectiveTextarea.disabled = isRunning; // true daca ruleaza, false daca e pe pauza
+            setControlsDisabled(isRunning);
+
+            if (isPaused) {
+                pauseButton.textContent = 'Resume';
+                pauseButton.style.backgroundColor = '#2ecc71'; // Verde
+            } else {
+                pauseButton.textContent = 'Pause';
+                pauseButton.style.backgroundColor = '#e67e22'; // Portocaliu
+            }
+        } else {
+            executeButton.style.display = 'block';
+            stopButton.style.display = 'none';
+            pauseButton.style.display = 'none';
+            objectiveTextarea.disabled = false;
+            setControlsDisabled(false);
+        }
+    });
+
+    // Listen for history updates to reload VM screen
+    socket.on('update_history', () => {
+        // Reload VM screen when history updates
+        loadVMScreen();
+    });
+
+    // Initialize views on page load
+    loadVMScreen();
+});
+</script>
+{% endblock %}
+</body>
+</html>
+
