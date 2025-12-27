@@ -148,6 +148,135 @@ The agent can adjust command timeouts on a per-step basis for long-running opera
 ### Manual Memory Editing
 Edit the agent's working memory directly via the "History & Reports" page to guide its behavior. Click "Edit Agent Memory" to modify the LLM context.
 
+## Prompt System
+
+The agent's behavior is guided by a comprehensive set of prompts that define how it analyzes tasks, generates commands, and handles various situations. All prompts are customizable through the web interface.
+
+### Available Prompt Types
+
+#### 1. **Standard Execution Prompt** (`CloudPrompt` / `OllamaPrompt`)
+The main prompt that guides the agent's decision-making process. It includes:
+
+**Core Strategy: Verify → Learn → Act**
+- Verify system information before acting
+- Learn command syntax with `--help` or `man` if uncertain
+- Execute only after verifying prerequisites
+- Handle timeouts and exit codes appropriately
+
+**Response Formats Available:**
+- `COMMAND:` - Execute a shell command
+- `WRITE_FILE:` - Create files on the remote system
+- `SRCH:` - Search execution history
+- `REPORT:` - Complete the task (Success/Failure)
+- `TIMEOUT:` - Adjust command timeout for current step
+
+**Key Features:**
+- Simplicity mandate (keep commands focused)
+- Loop detection (prevent infinite retries)
+- Summary awareness (respect summarized context)
+- Non-interactive terminal handling
+
+#### 2. **ASK-Enabled Prompt** (`CloudPromptWithAsk` / `OllamaPromptWithAsk`)
+Extended version that adds the `ASK:` capability for human interaction.
+
+**When Agent Can Ask:**
+- Critical actions (destructive operations, security implications)
+- Ambiguity/multiple choices requiring user guidance
+- Clarification needed for safe decision-making
+
+**Format:**
+```
+REASON: [Explanation]
+ASK: [Question for user]
+```
+
+#### 3. **History Summarization Prompt** (`CloudSummarizePrompt` / `OllamaSummarizePrompt`)
+Used when execution history exceeds the summarization threshold.
+
+**Preserves:**
+- Initial system discoveries (OS, hardware)
+- Major actions (software installed, files created)
+- Key errors and resolutions
+- HUMAN SEARCH/INTERVENTION findings
+- Last 2-3 command outputs
+
+**Variables:** `{objective}`, `{history}`
+
+#### 4. **Step Output Summarization Prompt** (`CloudStepSummaryPrompt` / `OllamaStepSummaryPrompt`)
+Triggered when a single command output is too large (flood protection).
+
+**Rules:**
+1. Preserve all error messages, warnings, exit codes
+2. Preserve last 5-10 lines exactly
+3. Keep key data points (IPs, paths, IDs)
+4. State clearly this is a summary
+
+**Variable:** `{output}`
+
+#### 5. **Search Results Summarization Prompt** (`CloudSearchSummaryPrompt` / `OllamaSearchSummaryPrompt`)
+Used when SRCH returns results from execution history.
+
+**Task:**
+- Synthesize findings relevant to the search reason
+- List specific data explicitly (IPs, paths, errors)
+- Ignore irrelevant logs
+- State clearly if nothing relevant found
+
+**Variables:** `{objective}`, `{reason}`, `{results}`
+
+#### 6. **Command Validator Prompt** (`CloudValidatePrompt` / `OllamaValidatePrompt`)
+Safety checker in Independent mode. Validates commands before execution.
+
+**Checks For:**
+- **Interactive blocking** - Commands requiring user input (nano, vi, apt without -y)
+- **Invalid format** - Syntax errors, OS incompatibility
+- **Timeout issues** - Commands likely exceeding configured timeout
+- **Destructive operations** - Potentially dangerous commands
+
+**Special Handling:**
+- Passwordless sudo support (when configured)
+- Piped password injection detection
+- OS-specific command validation
+
+**Response Format:** `APPROVE` or `REJECT\nREASON: [explanation]`
+
+**Variables:** `{system_info}`, `{sudo_available}`, `{command}`, `{reason}`, `{summarization_threshold}`, `{command_timeout}`
+
+### Customizing Prompts
+
+You can customize any prompt through the web interface:
+
+1. Click the **Prompt Editor** card in the settings bar
+2. Select the prompt type (Standard/Ask Mode)
+3. Edit prompts for Ollama or Cloud providers separately
+4. Click **Save Templates**
+
+For validator and summarization prompts, use their dedicated cards in the settings bar.
+
+### Prompt Variables
+
+Common variables available across prompts:
+- `{objective}` - Current task objective
+- `{history}` - Execution history or LLM context
+- `{system_info}` - Remote system information (OS, user, IP)
+- `{command}` - Command to validate
+- `{reason}` - Agent's reasoning
+- `{sudo_available}` - Whether passwordless sudo is configured
+- `{command_timeout}` - Maximum command execution time
+- `{summarization_threshold}` - Context size threshold
+- `{output}` - Command output to summarize
+- `{results}` - Search results to analyze
+
+### Default Configuration
+
+The `keys/config.ini.new` template file includes comprehensive, production-ready prompts for all scenarios. These prompts embody best practices for:
+- Methodical system administration
+- Safe command execution
+- Efficient debugging
+- Clear failure reporting
+
+You can use these as-is or customize them to match your specific use cases.
+
 ## Security Considerations
 
 ⚠️ **Important**: This tool executes commands on remote systems autonomously. Always:
