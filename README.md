@@ -51,18 +51,13 @@ git clone https://github.com/Balaurentiu/AI-SSH-Controller.git
 cd AI-SSH-Controller
 ```
 
-2. Create the keys directory and config:
+2. Create the keys directory:
 ```bash
 mkdir -p keys
-cp keys/config.ini.new keys/config.ini
+touch session.json
 ```
 
-3. Edit `keys/config.ini` with your settings:
-   - Set `provider` (ollama, gemini, or anthropic)
-   - Add API key if using cloud provider
-   - Configure target system details (IP, username, SSH port)
-
-4. Build and run with Docker:
+3. Build and run with Docker:
 ```bash
 docker build -t agent-controller .
 
@@ -72,16 +67,47 @@ docker run -d --name agent-app -p 5000:5000 \
   agent-controller
 ```
 
-5. Access the web interface at `http://localhost:5000`
+4. Access the web interface at `http://localhost:5000`
 
 ## Configuration
 
-Edit `keys/config.ini` to configure:
+All configuration is done through the **web interface** - no need to manually edit files!
 
-- **General**: LLM provider and API keys
-- **Agent**: Model name, max steps, timeouts, summarization threshold
-- **System**: Target SSH connection details
-- **Prompts**: Customize agent behavior for different scenarios
+### First-Time Setup
+
+1. Open `http://localhost:5000` in your browser
+2. Click the **Settings** icon (⚙️) in the top navigation
+3. Configure each section:
+
+   **Agent Configuration:**
+   - LLM Provider (Ollama, Gemini, or Anthropic)
+   - API Key (for Gemini/Anthropic)
+   - Model name (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`)
+   - Max steps, timeouts, and summarization threshold
+
+   **System Configuration:**
+   - Target system IP address
+   - SSH username
+   - SSH port (default: 22)
+   - SSH key path (auto-generated if not exists)
+
+   **Advanced:**
+   - Customize prompts for different scenarios
+   - Adjust validator prompts
+   - Configure summarization behavior
+
+4. Click **Save** to apply settings
+5. Test SSH connection using the "Test Connection" button
+
+### SSH Key Setup
+
+The application can automatically generate SSH keys. To deploy them to your target system:
+1. Go to Settings → System Config
+2. Click "Generate SSH Key" (if not already generated)
+3. Copy the public key shown
+4. Add it to `~/.ssh/authorized_keys` on your target system
+
+**Note:** Configuration is automatically saved to `keys/config.ini` for persistence across container restarts.
 
 ## Usage
 
