@@ -135,7 +135,7 @@ All configuration is done through the **web interface** - no need to manually ed
    - Enter target system IP address
    - Enter SSH username
    - Set SSH port (default: 22)
-   - Configure SSH key path
+   - Configure SSH key path ... enter the password for automatic deploy and press Deploy
    - Click **Save & Test Connection** to apply and verify connectivity
 
    **Optional - Advanced Settings:**
