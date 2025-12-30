@@ -771,6 +771,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- 3. Chat Messages ---
     function addChatMessage(role, text) {
+        // --- FIX: Hide Internal System Prompts from UI ---
+        // These messages are for the LLM only (Prompt Injection) and shouldn't be seen by the user.
+        if (text.includes('[ACTION COMPLETED]') && text.includes('INSTRUCTION:')) {
+            console.log("Hidden system message:", text.substring(0, 50) + "...");
+            return;
+        }
+        // ------------------------------------------------
+
         // Remove greeting if present
         const greeting = document.getElementById('chat-greeting');
         if (greeting) greeting.remove();
