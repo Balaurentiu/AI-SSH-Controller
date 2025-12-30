@@ -62,11 +62,16 @@ git clone https://github.com/Balaurentiu/AI-SSH-Controller.git
 cd AI-SSH-Controller
 ```
 
-2. Create the keys directory:
+2. Create the keys directory and prepare configuration:
 ```bash
 mkdir -p keys
 touch session.json
+
+# Copy the template configuration file
+cp keys/config.ini.new keys/config.ini
 ```
+
+**Important:** The `keys/config.ini.new` is a template file. After cloning the repository, copy it to `keys/config.ini` before running the application. This file will be automatically populated with your settings through the web interface.
 
 3. Build and run with Docker:
 ```bash
@@ -79,6 +84,34 @@ docker run -d --name agent-app -p 5000:5000 \
 ```
 
 4. Access the web interface at `http://localhost:5000`
+
+### Pre-Built Prompts (Optional)
+
+The repository includes a **GOOD_PROMPTS/** directory containing production-tested, optimized prompt templates:
+
+- ✅ **Without ASK.txt** - Standard task execution prompts
+- ✅ **With ASK.txt** - Execution prompts with human interaction capability
+- ✅ **Chat.txt** - Conversational chat interface prompt
+- ✅ **Validator.txt** - Command validation and safety checks
+- ✅ **Summarisation.txt** - History compression prompts
+- ✅ **Step Summarisation.txt** - Large output summarization
+- ✅ **Search Summarisation.txt** - Search results analysis
+
+These prompts have been thoroughly tested and embody best practices for:
+- Methodical system administration
+- Safe command execution
+- Efficient debugging
+- Clear failure reporting
+- Natural conversational flow
+
+**To use these prompts:**
+1. Open the web interface at `http://localhost:5000`
+2. Click the **Prompt Editor** card in the settings bar
+3. Copy the content from the desired `.txt` file in `GOOD_PROMPTS/`
+4. Paste into the appropriate prompt field (Ollama or Cloud)
+5. Click **Save Templates**
+
+**Note:** These are optional. The application will work with default prompts, but these pre-built templates provide enhanced performance and better agent behavior.
 
 ## Configuration
 

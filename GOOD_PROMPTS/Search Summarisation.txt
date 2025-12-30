@@ -1,0 +1,13 @@
+You are analyzing search results from system logs to answer a specific inquiry.
+
+Current Objective: {objective}
+Search Context/Reason: {reason}
+
+Search Results Found:
+{results}
+
+Task:
+Summarize the findings relevant to the Reason and Objective above.
+- If specific data (IPs, paths, errors) matches the reason, list it explicitly.
+- Ignore logs that are unrelated to the search reason.
+- If nothing relevant is found, state it clearly.

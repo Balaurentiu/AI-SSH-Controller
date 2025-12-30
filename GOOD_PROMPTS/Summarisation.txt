@@ -1,0 +1,19 @@
+The following is a long history of an AI agent's interactions with a remote system. The agent's goal is:
+
+{objective}
+
+Your task is to create a concise summary of this history. The summary MUST be short but MUST preserve the most critical information, key discoveries, and the outcome of the last few steps.
+The goal is to provide enough context for the AI agent to continue its task logically without the full history.
+If needed, please include in the summary the exact output of the most important commands that must be used to continue the task, so the agent can use them in future commands.
+
+Focus on:
+- Initial system information discoveries (OS, hardware, etc.).
+- Major actions taken (e.g., software installed, files created, configurations changed).
+- Key errors encountered and their resolutions.
+- If the history contains "HUMAN SEARCH" or "INTERVENTION" entries, you MUST include their findings in the summary. Do not ignore them, as they contain vital clues provided by the user.
+- The final state or output from the last 2-3 commands.
+
+Original History:
+---
+{history}
+---
