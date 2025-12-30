@@ -422,7 +422,8 @@ def get_agent_config():
         'ollama_api_url': cfg.get('Ollama', 'api_url', fallback='http://localhost:11434'),
         'max_steps': cfg.getint('Agent', 'max_steps', fallback=50),
         'summarization_threshold': cfg.getint('Agent', 'summarization_threshold', fallback=15000),
-        'llm_timeout': cfg.getint('Agent', 'llm_timeout', fallback=120)
+        'llm_timeout': cfg.getint('Agent', 'llm_timeout', fallback=120),
+        'chat_history_message_count': cfg.getint('Agent', 'chat_history_message_count', fallback=20)
     })
 
 @app.route('/save_agent_config', methods=['POST'])
@@ -439,6 +440,7 @@ def save_agent_config():
         cfg.set('Agent', 'max_steps', str(data['max_steps']))
         cfg.set('Agent', 'summarization_threshold', str(data['summarization_threshold']))
         cfg.set('Agent', 'llm_timeout', str(data.get('llm_timeout', 120)))
+        cfg.set('Agent', 'chat_history_message_count', str(data.get('chat_history_message_count', 20)))
         cfg.set('Ollama', 'api_url', data.get('ollama_api_url', ''))
         
         with open(CONFIG_FILE_PATH, 'w') as f:
@@ -917,71 +919,90 @@ def get_public_key():
 
 @app.route('/get_prompts')
 def get_prompts():
-    """Returneaza prompt-urile curente (Standard sau Ask)."""
+    """Returneaza prompt-urile curente (Standard, Ask, or Chat)."""
     cfg = get_config()
     mode = request.args.get('mode', 'standard')
-    provider = cfg.get('General', 'provider', fallback='ollama')
-    
-    ollama_section = 'OllamaPromptWithAsk' if mode == 'ask' else 'OllamaPrompt'
-    cloud_section = 'CloudPromptWithAsk' if mode == 'ask' else 'CloudPrompt'
 
-    ollama_prompt = cfg.get(ollama_section, 'template', fallback='')
-    cloud_prompt = cfg.get(cloud_section, 'template', fallback='')
+    data = {}
 
-    return jsonify({'ollama_prompt': ollama_prompt, 'cloud_prompt': cloud_prompt})
+    if mode == 'chat':
+        # Chat mode only has one prompt
+        chat_prompt = cfg.get('ChatPrompt', 'template', fallback='')
+        data['chat_prompt'] = chat_prompt
+    else:
+        # Standard or Ask logic
+        ollama_section = 'OllamaPromptWithAsk' if mode == 'ask' else 'OllamaPrompt'
+        cloud_section = 'CloudPromptWithAsk' if mode == 'ask' else 'CloudPrompt'
+        data['ollama_prompt'] = cfg.get(ollama_section, 'template', fallback='')
+        data['cloud_prompt'] = cfg.get(cloud_section, 'template', fallback='')
+
+    return jsonify(data)
 
 @app.route('/save_prompts', methods=['POST'])
 def save_prompts():
-    """Salveaza prompt-urile Standard sau Ask in config.ini."""
-    def validate_prompt(prompt_text, expect_ask=False):
+    """Salveaza prompt-urile (Standard, Ask, or Chat)."""
+    # Validation logic specific to mode
+    def validate_prompt(prompt_text, mode):
         errors = []
-        required_vars = {'objective', 'history', 'system_info'}
-        matches = re.findall(r'\{(\w+)\}', prompt_text)
-        found_vars = set(matches)
-        missing_vars = required_vars - found_vars
-        
-        if missing_vars:
-            errors.append(f"Missing variables: {', '.join(sorted(list(missing_vars)))}")
-            
-        required_keywords = ['COMMAND:', 'REPORT:']
-        if expect_ask and 'ask:' not in prompt_text.lower():
-            errors.append("Missing keyword: `ASK:` instructions needed.")
-            
-        missing_formats = [f"`{k}`" for k in required_keywords if k not in prompt_text]
-        if missing_formats:
-            errors.append(f"Missing format keywords (uppercase): {', '.join(sorted(missing_formats))}")
-            
-        return (False, ". ".join(errors)) if errors else (True, "Prompt is valid.")
+        if mode == 'chat':
+            # Relaxed validation for chat
+            if '{user_message}' not in prompt_text:
+                errors.append("Missing required variable: {user_message}")
+        else:
+            # Strict validation for execution modes
+            required_vars = {'objective', 'history', 'system_info'}
+            matches = re.findall(r'\{(\w+)\}', prompt_text)
+            found_vars = set(matches)
+            missing_vars = required_vars - found_vars
+            if missing_vars:
+                errors.append(f"Missing variables: {', '.join(sorted(list(missing_vars)))}")
+
+            is_ask = (mode == 'ask')
+            if is_ask and 'ask:' not in prompt_text.lower():
+                errors.append("Missing keyword: ASK instructions.")
+
+            if 'COMMAND:' not in prompt_text:
+                errors.append("Missing keyword: COMMAND:")
+
+        return (False, ". ".join(errors)) if errors else (True, "Valid.")
 
     try:
         cfg = get_config()
         mode = request.form.get('mode', 'standard')
-        ollama_prompt = request.form.get('ollama_prompt')
-        cloud_prompt = request.form.get('cloud_prompt')
-        is_ask_mode = (mode == 'ask')
 
-        is_ollama_valid, ollama_msg = validate_prompt(ollama_prompt, expect_ask=is_ask_mode)
-        if not is_ollama_valid:
-            return jsonify({'status': 'error', 'message': f'Ollama Error: {ollama_msg}'}), 400
+        if mode == 'chat':
+            chat_prompt = request.form.get('chat_prompt')
+            is_valid, msg = validate_prompt(chat_prompt, 'chat')
+            if not is_valid:
+                return jsonify({'status': 'error', 'message': f'Chat Prompt Error: {msg}'}), 400
 
-        is_cloud_valid, cloud_msg = validate_prompt(cloud_prompt, expect_ask=is_ask_mode)
-        if not is_cloud_valid:
-            return jsonify({'status': 'error', 'message': f'Cloud Error: {cloud_msg}'}), 400
+            if not cfg.has_section('ChatPrompt'): cfg.add_section('ChatPrompt')
+            cfg.set('ChatPrompt', 'template', chat_prompt)
 
-        ollama_section = 'OllamaPromptWithAsk' if is_ask_mode else 'OllamaPrompt'
-        cloud_section = 'CloudPromptWithAsk' if is_ask_mode else 'CloudPrompt'
+        else:
+            # Standard/Ask Logic
+            ollama_prompt = request.form.get('ollama_prompt')
+            cloud_prompt = request.form.get('cloud_prompt')
 
-        if not cfg.has_section(ollama_section): cfg.add_section(ollama_section)
-        cfg.set(ollama_section, 'template', ollama_prompt)
+            is_valid_o, msg_o = validate_prompt(ollama_prompt, mode)
+            is_valid_c, msg_c = validate_prompt(cloud_prompt, mode)
 
-        if not cfg.has_section(cloud_section): cfg.add_section(cloud_section)
-        cfg.set(cloud_section, 'template', cloud_prompt)
-        
+            if not is_valid_o: return jsonify({'status': 'error', 'message': f'Ollama Error: {msg_o}'}), 400
+            if not is_valid_c: return jsonify({'status': 'error', 'message': f'Cloud Error: {msg_c}'}), 400
+
+            ollama_section = 'OllamaPromptWithAsk' if mode == 'ask' else 'OllamaPrompt'
+            cloud_section = 'CloudPromptWithAsk' if mode == 'ask' else 'CloudPrompt'
+
+            if not cfg.has_section(ollama_section): cfg.add_section(ollama_section)
+            cfg.set(ollama_section, 'template', ollama_prompt)
+            if not cfg.has_section(cloud_section): cfg.add_section(cloud_section)
+            cfg.set(cloud_section, 'template', cloud_prompt)
+
         with open(CONFIG_FILE_PATH, 'w') as f:
             cfg.write(f)
-            
+
         return jsonify({'status': 'success', 'message': 'Prompts saved!'})
-        
+
     except Exception as e:
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': f'Error saving prompts: {e}'}), 500
@@ -1175,9 +1196,13 @@ def handle_connect():
     try:
         # CORECTIE LOG: Trimitem log-ul parsat pentru vizualizarea 'Live'
         filtered_log = agent_core.parse_command_log(GLOBAL_STATE['last_session']['log'])
-        
+
         raw_responses = "\n\n".join([f"-- Resp {i+1} --\n{r}" for i, r in enumerate(GLOBAL_STATE['last_session'].get("raw_llm_responses", []))])
-        
+
+        # Load Chat History
+        log_manager = GLOBAL_STATE.get('log_manager')
+        chat_history = log_manager.get_chat_history() if log_manager else []
+
         initial_data = {
             'agent_history': GLOBAL_STATE['agent_history'],
             'vm_output': GLOBAL_STATE['persistent_vm_output'],
@@ -1186,7 +1211,8 @@ def handle_connect():
             'raw_llm_responses': raw_responses,
             'task_running': GLOBAL_STATE['task_running'],
             'task_paused': GLOBAL_STATE['task_paused'],
-            'validator_enabled': GLOBAL_STATE.get('validator_enabled', True) # NEW
+            'validator_enabled': GLOBAL_STATE.get('validator_enabled', True),
+            'chat_history': chat_history  # NEW FIELD
         }
         socketio.emit('initial_state', initial_data, to=request.sid)
         
@@ -1467,21 +1493,22 @@ def handle_reset_agent(data):
         if GLOBAL_STATE['task_running']:
             socketio.emit('agent_log', {'data': "Cannot reset while a task is running. Please stop the task first."})
             return
-            
-        # Resetam memoria
+
+        # 1. Resetam fisierele de pe disc (Sesiune & Exec Log)
         reset_state = session_manager.reset_all_memory(SESSION_FILE_PATH, EXECUTION_LOG_FILE_PATH)
         GLOBAL_STATE.update(reset_state)
 
-        # Resetam si output-ul VM
+        # 2. Resetam variabilele specifice din RAM care nu sunt in session_manager
         GLOBAL_STATE['persistent_vm_output'] = ""
+        GLOBAL_STATE['current_objective'] = ""  # FIX: Explicitly clear the objective
 
-        # Reset log_manager (clears base log and all other logs)
+        # 3. Reset Log Manager (Base Log, Context, Chat History)
         log_manager = GLOBAL_STATE.get('log_manager')
         if log_manager:
-            log_manager.reset_all()
+            log_manager.reset_all()  # This clears execution_log, llm_context, AND chat_history.json
             print("Log manager reset completed.")
-        
-        # Emitem noua stare
+
+        # 4. Emitem noua stare catre UI
         socketio.emit('initial_state', {
             'agent_history': GLOBAL_STATE['agent_history'],
             'vm_output': GLOBAL_STATE['persistent_vm_output'],
@@ -1489,11 +1516,14 @@ def handle_reset_agent(data):
             'last_report': '',
             'raw_llm_responses': '',
             'task_running': False,
-            'task_paused': False
+            'task_paused': False,
+            'chat_history': []  # Clear chat in UI
         })
-        
-        socketio.emit('agent_log', {'data': "--- AGENT MEMORY RESET ---", 'clear': True})
+
+        # Confirmare vizuala
+        socketio.emit('agent_log', {'data': "--- AGENT MEMORY & OBJECTIVE RESET ---", 'clear': True})
         socketio.emit('vm_screen', {'data': "--- VM OUTPUT RESET ---", 'clear': True})
+        socketio.emit('chat_history_cleared')  # Signal chat UI to clear
 
 @socketio.on('edit_history')
 def handle_edit_history(data):
@@ -1537,6 +1567,131 @@ def handle_human_search_completed(data):
     GLOBAL_STATE['human_search_pending'] = False
     if GLOBAL_STATE.get('task_running', False):
         socketio.emit('agent_log', {'data': "--- Agent resumed: Human search completed ---"})
+
+@socketio.on('send_chat_message')
+def handle_chat_message(data):
+    """Handle incoming chat messages from the UI."""
+    message = data.get('message', '').strip()
+    if not message:
+        return
+
+    # Start a background task for the chat response
+    socketio.start_background_task(
+        agent_core.process_chat_message,
+        socketio,
+        GLOBAL_STATE,
+        message
+    )
+
+@socketio.on('clear_chat')
+def handle_clear_chat():
+    """Clear persistent chat history."""
+    log_manager = GLOBAL_STATE.get('log_manager')
+    if log_manager:
+        log_manager.clear_chat_history()
+    socketio.emit('chat_history_cleared')
+
+@socketio.on('analyze_task_result')
+def handle_analyze_task_result():
+    """
+    Called by frontend when a chat-initiated task finishes.
+    """
+    global GLOBAL_STATE
+
+    final_report = GLOBAL_STATE.get('last_session', {}).get('final_report', 'No report available.')
+    current_objective = GLOBAL_STATE.get('current_objective', '')
+
+    # Mark action plan step as completed if it matches
+    log_manager = GLOBAL_STATE.get('log_manager')
+    if log_manager and current_objective:
+        step_marked = log_manager.mark_plan_step_completed(current_objective)
+        if step_marked:
+            print(f"Action plan step marked complete: {current_objective}")
+
+            # Emit updated action plan data to UI
+            plan_data = log_manager.action_plan.get_active_plan()
+            if plan_data:
+                socketio.emit('action_plan_data', {
+                    'exists': True,
+                    'title': plan_data.get('title', 'Action Plan'),
+                    'steps': plan_data['steps'],
+                    'total_steps': len(plan_data['steps']),
+                    'completed_steps': sum(1 for s in plan_data['steps'] if s.get('completed', False)),
+                    'next_step_index': next((i+1 for i, s in enumerate(plan_data['steps']) if not s.get('completed', False)), None),
+                    'created_at': plan_data.get('created_at', '')
+                })
+
+    # Improved Prompt: Contextual closing instead of "System Event"
+    system_trigger = f"""
+[ACTION COMPLETED]
+The execution of the initiated task is finished.
+Final Report: {final_report}
+
+INSTRUCTION:
+Based on the previous conversation, briefly inform the user that the task is done and summarize the outcome.
+Be natural, and continue the conversation.
+"""
+
+    socketio.start_background_task(
+        agent_core.process_chat_message,
+        socketio,
+        GLOBAL_STATE,
+        system_trigger
+    )
+
+@socketio.on('get_action_plan')
+def handle_get_action_plan():
+    """
+    Returns the current action plan data in a formatted structure.
+    """
+    log_manager = GLOBAL_STATE.get('log_manager')
+    if not log_manager:
+        socketio.emit('action_plan_data', {'exists': False})
+        return
+
+    # Load raw plan data (active plan from stack)
+    plan_data = log_manager.action_plan.get_active_plan()
+
+    if not plan_data or 'steps' not in plan_data:
+        socketio.emit('action_plan_data', {'exists': False})
+        return
+
+    # Calculate progress
+    total_steps = len(plan_data['steps'])
+    completed_steps = sum(1 for step in plan_data['steps'] if step.get('completed', False))
+
+    # Find next pending step
+    next_step_index = None
+    for idx, step in enumerate(plan_data['steps'], 1):
+        if not step.get('completed', False):
+            next_step_index = idx
+            break
+
+    # Format response
+    response = {
+        'exists': True,
+        'title': plan_data.get('title', 'Action Plan'),
+        'steps': plan_data['steps'],
+        'total_steps': total_steps,
+        'completed_steps': completed_steps,
+        'next_step_index': next_step_index,
+        'created_at': plan_data.get('created_at', '')
+    }
+
+    socketio.emit('action_plan_data', response)
+
+@socketio.on('clear_action_plan')
+def handle_clear_action_plan():
+    """
+    Clears the current action plan.
+    """
+    log_manager = GLOBAL_STATE.get('log_manager')
+    if log_manager:
+        log_manager.clear_action_plan()
+        print("Action plan cleared via UI request")
+
+    # Notify frontend
+    socketio.emit('action_plan_cleared')
 
 # ---
 # --- Initializare Aplicatie (Module Level - runs on import) ---

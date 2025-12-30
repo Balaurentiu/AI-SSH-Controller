@@ -395,6 +395,15 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.on('task_finished', () => {
         isTaskRunning = false;
         executionPausedWarning.style.display = 'none';
+
+        // --- NEW: Handle Pending Chat Analysis ---
+        // If this task was started from Chat, but we are on the History page,
+        // mark it as "pending" so index.html can handle it when the user returns.
+        if (sessionStorage.getItem('isTaskFromChat') === 'true') {
+            console.log("Task from chat finished while on History page. Setting pending flag.");
+            sessionStorage.setItem('pendingChatAnalysis', 'true');
+            // Optional: You could show a toast notification here telling the user to go back to Live Control.
+        }
     });
 
     socket.on('task_paused', () => {

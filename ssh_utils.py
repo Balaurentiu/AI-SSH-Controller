@@ -256,6 +256,12 @@ def execute_ssh_command(command: str) -> str:
         use_pty = not is_likely_windows
         stdin, stdout, stderr = client.exec_command(command, timeout=1200, get_pty=use_pty)
 
+        # --- FIX: Close STDIN immediately ---
+        # This prevents commands like 'sudo', 'psql', or 'docker' from hanging
+        # while waiting for input that will never come.
+        stdin.close()
+        # ------------------------------------
+
         output = stdout.read().decode('utf-8', 'ignore').strip()
         error_output = stderr.read().decode('utf-8', 'ignore').strip()
         exit_status = stdout.channel.recv_exit_status()

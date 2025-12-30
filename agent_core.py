@@ -1329,8 +1329,8 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
             if approved_for_execution and control_flags['is_running']():
                 log_agent("--- EXECUTION RESUMED - Command Approved ---")
 
-                # --- FIX: PAGER BLOCKING (systemctl, service, journalctl, man) ---
-                pager_commands = ['systemctl status', 'systemctl', 'service', 'journalctl', 'man']
+                # --- FIX: PAGER BLOCKING (systemctl, service, journalctl, man, psql) ---
+                pager_commands = ['systemctl status', 'systemctl', 'service', 'journalctl', 'man', 'psql', 'sudo -u postgres psql']
                 command_to_check = command_to_execute.strip()
 
                 needs_pager_fix = False
@@ -1486,3 +1486,239 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
         control_flags['set_paused'](False)
         # Emitem un semnal final catre UI (wrapper-ul va emite inca unul ca garantie)
         socketio.emit('task_finished')
+
+
+# --- NEW: Chat Message Processing ---
+def process_chat_message(socketio, global_state, user_message):
+    """
+    Processes a chat message. Handles:
+    1. Normal responses.
+    2. Task proposals (<<REQUEST_TASK>>).
+    3. Search requests (SRCH:) with auto-recursion (thought loop).
+    """
+    import app  # Import here to avoid circular dependency
+
+    try:
+        cfg = get_config()
+        provider = cfg.get('General', 'provider', fallback='')
+        model_name = cfg.get('Agent', 'model_name', fallback='')
+
+        # 0. Save User Message (only once at the start)
+        log_manager = global_state.get('log_manager')
+        if log_manager:
+            log_manager.log_chat_message('user', user_message)
+
+        # 1. Init LLM
+        llm = None
+        if provider == 'ollama':
+            api_url = cfg.get('Ollama', 'api_url', fallback='')
+            llm = Ollama(model=model_name, base_url=api_url, timeout=120)
+        elif provider == 'gemini':
+            api_key = cfg.get('General', 'gemini_api_key', fallback='')
+            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, generation_config={"temperature": 0.6})
+        elif provider == 'anthropic':
+            api_key = cfg.get('General', 'anthropic_api_key', fallback='')
+            llm = ChatAnthropic(model=model_name, api_key=api_key, temperature=0.6)
+
+        if not llm:
+            socketio.emit('chat_response', {'role': 'assistant', 'content': 'Error: LLM not configured.'})
+            return
+
+        # --- RECURSION LOOP (Max 3 turns for Search) ---
+        # We loop to allow the agent to: User -> Agent(SRCH) -> System(Results) -> Agent(Answer)
+        max_turns = 3
+        current_turn = 0
+
+        while current_turn < max_turns:
+            current_turn += 1
+
+            # 2. Prepare Prompt
+            # We re-read config here in case prompts changed, but usually static per request
+            prompt_template_str = cfg.get('ChatPrompt', 'template', fallback="Context: {history}\nUser: {user_message}")
+            prompt = PromptTemplate.from_template(prompt_template_str)
+
+            # Get context (it updates every loop iteration if we added search results)
+            if log_manager:
+                history_context = log_manager.get_llm_context()
+            else:
+                history_context = global_state.get('agent_history', '')
+
+            # Get Action Plan Status (separate variable)
+            action_plan_status_text = "No active plan."
+            if log_manager:
+                plan_status = log_manager.get_action_plan_status()
+                if plan_status:
+                    action_plan_status_text = plan_status
+
+            # Safety truncation
+            if len(history_context) > 40000:
+                 history_context = "...[Truncated old history]...\n" + history_context[-40000:]
+
+            # Load recent chat history (configurable count, excluding current user message)
+            chat_history_text = ""
+            if log_manager:
+                # Read message count from config (default 20)
+                chat_msg_count = int(cfg.get('Agent', 'chat_history_message_count', fallback='20'))
+
+                chat_messages = log_manager.get_chat_history()
+                # Get last N messages (excluding the current user message which was just added)
+                recent_messages = chat_messages[-(chat_msg_count+1):-1] if len(chat_messages) > 1 else []
+
+                if recent_messages:
+                    formatted_messages = []
+                    for msg in recent_messages:
+                        role_label = "You" if msg.get('role') == 'user' else "Agent"
+                        content = msg.get('content', '')
+                        formatted_messages.append(f"{role_label}: {content}")
+
+                    chat_history_text = "\n".join(formatted_messages)
+                else:
+                    chat_history_text = "(No previous chat messages)"
+            else:
+                chat_history_text = "(Chat history not available)"
+
+            # Format Prompt (Include action_plan_status as separate variable)
+            full_prompt = prompt.format(
+                objective=global_state.get('current_objective', 'None'),
+                action_plan_status=action_plan_status_text,
+                system_info=global_state.get('system_os_info', 'Unknown'),
+                history=history_context,
+                chat_history=chat_history_text,
+                user_message=user_message
+            )
+
+            # 3. Invoke LLM
+            socketio.emit('chat_status', {'status': 'thinking'})
+            response_obj = llm.invoke(full_prompt)
+
+            response_text = ""
+            if hasattr(response_obj, 'content'):
+                response_text = response_obj.content
+            else:
+                response_text = str(response_obj)
+
+            # 4. Check for SRCH:
+            srch_match = re.search(r'SRCH:\s*(.*)', response_text, re.IGNORECASE)
+
+            if srch_match:
+                search_query = srch_match.group(1).strip()
+
+                # Extract REASON (optional) for better summarization
+                reason_match = re.search(r'REASON:\s*(.*)', response_text, re.IGNORECASE)
+                reason = reason_match.group(1).strip() if reason_match else "Chat Agent Search"
+
+                socketio.emit('chat_status', {'status': f'searching: {search_query[:20]}...'})
+
+                # Execute Search with extracted REASON
+                search_result = app.perform_unified_search(search_query, reason=reason, summarize=True)
+                search_data = search_result['results_summarized']
+
+                # Update Context with Results
+                # We append to the persistent context so the agent "remembers" the search in this turn
+                history_injection = f"\n\n--- CHAT SEARCH ---\nQuery: {search_query}\nResults:\n{search_data}\n"
+
+                if log_manager:
+                    # Log internally as system event
+                    log_manager.append_to_llm_context(history_injection)
+                    # Sync global state
+                    global_state['agent_history'] = log_manager.get_llm_context()
+
+                # Continue loop -> Re-prompt LLM with updated context containing search results
+                continue
+
+            # 5. Check for Action Plan (<<ACTION_PLAN_START>> ... <<ACTION_PLAN_STOP>>)
+            plan_match = re.search(
+                r'<<ACTION_PLAN_START>>(.*?)<<ACTION_PLAN_STOP>>',
+                response_text,
+                re.DOTALL | re.IGNORECASE
+            )
+
+            if plan_match:
+                plan_content = plan_match.group(1).strip()
+
+                # Extract title (first line after marker)
+                lines = [line.strip() for line in plan_content.split('\n') if line.strip()]
+                title = "Multi-Step Plan"
+                steps = []
+
+                for line in lines:
+                    # Check if line starts with "Title:" or "title:"
+                    if line.lower().startswith('title:'):
+                        title = line.split(':', 1)[1].strip()
+                    # Check if line starts with "Step" followed by number
+                    elif re.match(r'step\s+\d+[\.\):]?\s*', line, re.IGNORECASE):
+                        # Extract step objective (everything after "Step X. " or "Step X: " etc)
+                        step_text = re.sub(r'^step\s+\d+[\.\):]?\s*', '', line, flags=re.IGNORECASE)
+                        if step_text:
+                            steps.append(step_text)
+
+                if steps and log_manager:
+                    log_manager.set_action_plan(title, steps)
+                    socketio.emit('chat_status', {'status': f'plan created: {len(steps)} steps'})
+
+                    # Emit action plan data to update UI button
+                    plan_data = log_manager.action_plan.get_active_plan()
+                    if plan_data:
+                        import app
+                        socketio.emit('action_plan_data', {
+                            'exists': True,
+                            'title': plan_data.get('title', 'Action Plan'),
+                            'steps': plan_data['steps'],
+                            'total_steps': len(plan_data['steps']),
+                            'completed_steps': sum(1 for s in plan_data['steps'] if s.get('completed', False)),
+                            'next_step_index': next((i+1 for i, s in enumerate(plan_data['steps']) if not s.get('completed', False)), None),
+                            'created_at': plan_data.get('created_at', '')
+                        })
+
+                # Remove the plan markup from response
+                response_text = response_text.replace(plan_match.group(0), "").strip()
+
+                # Add confirmation message if response is now empty
+                if not response_text:
+                    response_text = f"I've created an action plan with {len(steps)} steps. Let's start with Step 1."
+
+            # 6. Check for Task Requests (<<REQUEST_TASK>>)
+            # Improved regex to handle variants like:
+            # <<REQUEST_TASK: Objective>>  (Standard)
+            # <<REQUEST_TASK>>: Objective  (Common LLM hallucination)
+
+            task_match = None
+            new_task_objective = ""
+
+            # Pattern 1: Standard <<REQUEST_TASK: ... >>
+            match_standard = re.search(r'<<REQUEST_TASK:\s*(.*?)>>', response_text, re.IGNORECASE)
+
+            # Pattern 2: Loose <<REQUEST_TASK>>: ...
+            match_loose = re.search(r'<<REQUEST_TASK>>:?\s*(.*)', response_text, re.IGNORECASE)
+
+            if match_standard:
+                task_match = match_standard
+                new_task_objective = match_standard.group(1).strip()
+            elif match_loose:
+                task_match = match_loose
+                new_task_objective = match_loose.group(1).strip()
+
+            final_content = response_text
+            if task_match:
+                # Clean the tag from the response shown to user
+                clean_content = response_text.replace(task_match.group(0), "").strip()
+                if not clean_content:
+                    clean_content = f"I suggest we perform a new task: {new_task_objective}"
+                final_content = clean_content
+
+                socketio.emit('chat_task_proposal', {'objective': new_task_objective})
+
+            # 7. Final Response (No SRCH found, loop ends)
+            socketio.emit('chat_response', {'role': 'assistant', 'content': final_content})
+
+            if log_manager:
+                log_manager.log_chat_message('assistant', final_content)
+
+            break  # Exit loop
+
+        socketio.emit('chat_status', {'status': 'idle'})
+
+    except Exception as e:
+        traceback.print_exc()
+        socketio.emit('chat_response', {'role': 'assistant', 'content': f"Error: {str(e)}"})
+        socketio.emit('chat_status', {'status': 'error'})

@@ -3,7 +3,7 @@ import re
 import json
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
-from config import KEYS_DIR, APP_DIR, EXECUTION_LOG_LLM_CONTEXT_PATH
+from config import KEYS_DIR, APP_DIR, EXECUTION_LOG_LLM_CONTEXT_PATH, CHAT_LOG_FILE_PATH, ACTION_PLAN_FILE_PATH
 
 # ===========================
 # === LOG PATHS ===
@@ -383,6 +383,246 @@ class AgentMemoryManager:
 
 
 # ===========================
+# === CHAT LOG MANAGER ===
+# ===========================
+
+class ChatLogManager:
+    """Manages the persistent chat history in JSON format."""
+
+    def __init__(self, log_path: str = CHAT_LOG_FILE_PATH):
+        self.log_path = log_path
+        self._ensure_log_exists()
+
+    def _ensure_log_exists(self):
+        if not os.path.exists(self.log_path):
+            with open(self.log_path, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+
+    def load_history(self) -> List[Dict]:
+        try:
+            with open(self.log_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            return []
+
+    def add_message(self, role: str, content: str):
+        try:
+            history = self.load_history()
+            entry = {
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now().isoformat()
+            }
+            history.append(entry)
+            # Limit history size (last 200 messages) to prevent huge files
+            if len(history) > 200:
+                history = history[-200:]
+
+            with open(self.log_path, 'w', encoding='utf-8') as f:
+                json.dump(history, f, indent=2)
+        except Exception as e:
+            print(f"Error saving chat history: {e}")
+
+    def clear_history(self):
+        print(f"ChatLogManager: Attempting to clear history at {self.log_path}")
+        try:
+            with open(self.log_path, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+            print(f"ChatLogManager: Successfully cleared chat history")
+        except Exception as e:
+            print(f"ChatLogManager ERROR: Failed to clear chat history: {e}")
+            import traceback
+            traceback.print_exc()
+
+
+class ActionPlanManager:
+    """
+    Manages persistent multi-step action plans using a STACK structure.
+    Allows nested sub-plans (e.g., Main Plan -> Sub-task Plan).
+    """
+
+    def __init__(self, log_path: str = ACTION_PLAN_FILE_PATH):
+        self.log_path = log_path
+        self._ensure_file_exists()
+
+    def _ensure_file_exists(self):
+        if not os.path.exists(self.log_path):
+            self._save_stack([])
+
+    def _save_stack(self, stack: List[Dict]):
+        try:
+            with open(self.log_path, 'w', encoding='utf-8') as f:
+                json.dump(stack, f, indent=2)
+        except Exception as e:
+            print(f"Error saving action plan stack: {e}")
+
+    def load_stack(self) -> List[Dict]:
+        """Returns the full stack of plans."""
+        try:
+            with open(self.log_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict) and 'steps' in data:
+                    # Migration from old format: wrap single plan in list
+                    return [data]
+                return []
+        except (json.JSONDecodeError, FileNotFoundError):
+            return []
+
+    def get_active_plan(self) -> Optional[Dict]:
+        """Returns the plan at the top of the stack (the one currently being executed)."""
+        stack = self.load_stack()
+        return stack[-1] if stack else None
+
+    def set_plan(self, title: str, steps: List[str]):
+        """PUSHES a new plan onto the stack."""
+        stack = self.load_stack()
+
+        new_plan = {
+            "id": int(datetime.now().timestamp()),
+            "title": title,
+            "steps": [{"objective": step.strip(), "completed": False} for step in steps],
+            "created_at": datetime.now().isoformat()
+        }
+
+        # Check if identical plan is already on top (prevent duplicate pushes by LLM loops)
+        if stack and stack[-1]['title'] == title and len(stack[-1]['steps']) == len(steps):
+            print("ActionPlanManager: Identical plan already active. Skipping push.")
+            return
+
+        stack.append(new_plan)
+        self._save_stack(stack)
+        print(f"Action plan PUSHED: '{title}' (Stack depth: {len(stack)})")
+
+    def get_plan_status(self) -> str:
+        """Returns formatted status of the ACTIVE plan for prompt injection."""
+        stack = self.load_stack()
+        if not stack:
+            return ""
+
+        active_plan = stack[-1]
+        parent_title = stack[-2]['title'] if len(stack) > 1 else "None"
+
+        status_lines = ["\n--- CURRENT ACTION PLAN STATUS ---"]
+
+        if len(stack) > 1:
+            status_lines.append(f"Context: You are working on a SUB-PLAN.")
+            status_lines.append(f"Parent Plan: '{parent_title}' (Paused until sub-plan finishes)")
+
+        status_lines.append(f"ACTIVE PLAN: {active_plan['title']}")
+
+        steps_done = 0
+        total_steps = len(active_plan['steps'])
+
+        for idx, step in enumerate(active_plan['steps'], 1):
+            checkbox = "[X]" if step['completed'] else "[ ]"
+            status_lines.append(f"{checkbox} Step {idx}. {step['objective']}")
+            if step['completed']:
+                steps_done += 1
+
+        # Find next pending step
+        next_step = None
+        for idx, step in enumerate(active_plan['steps'], 1):
+            if not step['completed']:
+                next_step = idx
+                break
+
+        if next_step:
+            status_lines.append(f"\nACTION REQUIRED: Perform Step {next_step}.")
+            status_lines.append(f"Use <<REQUEST_TASK: ...>> to initiate Step {next_step}.")
+        else:
+            status_lines.append(f"\nActive plan '{active_plan['title']}' is COMPLETE.")
+            if len(stack) > 1:
+                status_lines.append(f"Wait for the user to acknowledge, then we will return to parent plan: '{parent_title}'.")
+
+        status_lines.append("---\n")
+        return "\n".join(status_lines)
+
+    def mark_step_completed(self, step_objective: str) -> bool:
+        """
+        Marks step in ACTIVE plan.
+        If active plan finishes, POPS it from stack.
+        """
+        stack = self.load_stack()
+        if not stack:
+            return False
+
+        # Work only on the top plan
+        active_plan = stack[-1]
+
+        # --- ROBUST MATCHING LOGIC ---
+        normalized_input = step_objective.lower().strip()
+        input_tokens = set(re.findall(r'\w+', normalized_input))
+
+        updated = False
+        highest_completed_index = -1
+
+        for idx, step in enumerate(active_plan['steps']):
+            if step.get('completed', False):
+                highest_completed_index = max(highest_completed_index, idx)
+                continue
+
+            step_text = step['objective'].lower().strip()
+            step_tokens = set(re.findall(r'\w+', step_text))
+
+            if not step_tokens: continue
+
+            common_words = input_tokens.intersection(step_tokens)
+            match_score = len(common_words) / len(step_tokens)
+
+            is_match = (step_text in normalized_input) or \
+                       (normalized_input in step_text) or \
+                       (match_score > 0.5)
+
+            if is_match:
+                step['completed'] = True
+                updated = True
+                highest_completed_index = max(highest_completed_index, idx)
+                print(f"Action plan: Marked Step {idx+1} completed in '{active_plan['title']}'")
+
+        # Catch-up logic
+        if highest_completed_index > -1:
+            for i in range(highest_completed_index):
+                if not active_plan['steps'][i].get('completed', False):
+                    active_plan['steps'][i]['completed'] = True
+                    updated = True
+
+        # Check if plan is fully complete
+        all_done = all(s.get('completed', False) for s in active_plan['steps'])
+
+        if updated:
+            if all_done:
+                print(f"Action plan '{active_plan['title']}' finished! Popping from stack.")
+                # We don't pop immediately here to let the UI show "100% done" once.
+                # Ideally, we pop when the NEXT request comes or the user acknowledges.
+                # For now, we save the completed state.
+                pass
+
+            self._save_stack(stack)
+
+        return updated
+
+    def pop_finished_plans(self):
+        """Helper to remove finished plans from top of stack (called before getting status or setting new ones)."""
+        stack = self.load_stack()
+        if not stack: return
+
+        # If top plan is done, remove it
+        if all(s.get('completed', False) for s in stack[-1]['steps']):
+             # Only pop if there is a parent plan to go back to, OR if we want to clear the slate
+             if len(stack) > 0:
+                 finished = stack.pop()
+                 print(f"Popped finished plan: {finished['title']}")
+                 self._save_stack(stack)
+
+    def clear_plan(self):
+        """Clears the entire stack."""
+        self._save_stack([])
+        print("Action plan stack cleared")
+
+
+# ===========================
 # === UNIFIED LOG FACADE ===
 # ===========================
 
@@ -393,6 +633,8 @@ class UnifiedLogManager:
         self.base_log = BaseLogManager()
         self.view_generator = ViewGenerator(self.base_log)
         self.agent_memory = AgentMemoryManager(self.base_log)
+        self.chat_log = ChatLogManager()
+        self.action_plan = ActionPlanManager()  # NEW
 
     # === Task Lifecycle ===
     def log_new_task(self, objective: str, system_info: str):
@@ -491,32 +733,117 @@ class UnifiedLogManager:
         return self.agent_memory.get_context_size()
 
     def search_past_context(self, query: str, limit: int = 50) -> str:
+        """
+        Searches the full log. If a match is found within a file content block,
+        returns the entire block. Otherwise, returns a standard context window.
+        """
         full_log = self.base_log.read_full_log()
         if not full_log: return "No log data available."
 
-        # CLEANUP: Remove surrounding quotes and backticks to improve matching hits
-        # Agent often asks for SRCH: "/path/file" or `error`, but log has clean text
-        # We strip: spaces, double quotes ("), single quotes ('), and backticks (`)
         clean_query = query.strip().strip('"\'`')
-
         lines = full_log.split('\n')
         matching_sections = []
         query_lower = clean_query.lower()
-        for i, line in enumerate(lines):
-            if query_lower in line.lower():
-                start = max(0, i - 2)
-                end = min(len(lines), i + 3)
+
+        # Helper to find block boundaries
+        def expand_to_block(start_idx, end_idx):
+            # Markers for file content blocks
+            FILE_START_MARKER = "--- FILE CONTENT WRITTEN TO"
+            FILE_END_MARKER = "--- END FILE CONTENT ---"
+
+            block_start = max(0, start_idx - 5)
+            block_end = min(len(lines), end_idx + 10)
+
+            # 1. Search backwards for start marker (up to 2000 lines back)
+            found_start = False
+            potential_start = -1
+
+            for i in range(start_idx, max(-1, start_idx - 2000), -1):
+                if FILE_START_MARKER in lines[i]:
+                    potential_start = i
+                    found_start = True
+                    break
+                # Stop if we hit a previous end marker (overlap protection)
+                if FILE_END_MARKER in lines[i] and i < start_idx:
+                    break
+
+            # 2. If start found, search forwards for end marker
+            if found_start:
+                for i in range(end_idx, min(len(lines), end_idx + 4000)):
+                    if FILE_END_MARKER in lines[i]:
+                        # We found a complete block!
+                        return potential_start, i + 1 # Include the marker line
+
+            # Default logic: standard small context window if no block detected
+            return block_start, block_end
+
+        # Find matches
+        i = 0
+        while i < len(lines):
+            if query_lower in lines[i].lower():
+                # We found a match at line i. Try to expand to full block.
+                start, end = expand_to_block(i, i)
+
                 section = '\n'.join(lines[start:end])
-                matching_sections.append(section)
+
+                # Avoid duplicates if multiple hits are in the same block
+                if not matching_sections or section != matching_sections[-1]:
+                    matching_sections.append(section)
+
+                # Skip ahead to avoid finding the same block multiple times
+                i = end
+
                 if len(matching_sections) >= limit: break
+            else:
+                i += 1
+
         if not matching_sections: return f"No matches found for: {clean_query}"
+
         result = f"=== SEARCH RESULTS FOR: {clean_query} ===\n\n"
         result += "\n\n---\n\n".join(matching_sections)
         result += f"\n\n=== END SEARCH ({len(matching_sections)} matches) ==="
         return result
 
     def reset_all(self):
-        """Reset all logs and LLM context."""
+        """Reset all logs, LLM context, chat history, AND action plan."""
+        print("UnifiedLogManager: Starting reset_all()")
         self.base_log.reset_log()
+        print("UnifiedLogManager: Base log reset")
         # Reset LLM context file to initial state
         self.agent_memory.overwrite_context("No commands have been executed yet.")
+        print("UnifiedLogManager: Agent memory reset")
+        self.chat_log.clear_history()
+        print("UnifiedLogManager: Chat history cleared")
+        self.action_plan.clear_plan()  # NEW: Clear action plan on reset
+        print("UnifiedLogManager: Action plan cleared")
+        print("UnifiedLogManager: reset_all() completed")
+
+    # === NEW: Chat Operations ===
+    def log_chat_message(self, role: str, content: str):
+        """Log a chat message to persistent history."""
+        self.chat_log.add_message(role, content)
+
+    def get_chat_history(self) -> List[Dict]:
+        """Get all chat messages from persistent history."""
+        return self.chat_log.load_history()
+
+    def clear_chat_history(self):
+        """Clear all chat history."""
+        self.chat_log.clear_history()
+
+    # === Action Plan Management ===
+    def set_action_plan(self, title: str, steps: List[str]):
+        """Create a new multi-step action plan."""
+        self.action_plan.set_plan(title, steps)
+
+    def get_action_plan_status(self) -> str:
+        """Get formatted action plan status for prompt injection."""
+        return self.action_plan.get_plan_status()
+
+    def mark_plan_step_completed(self, step_objective: str) -> bool:
+        """Mark a plan step as completed. Returns True if matched."""
+        return self.action_plan.mark_step_completed(step_objective)
+
+    def clear_action_plan(self):
+        """Clear the active action plan."""
+        self.action_plan.clear_plan()

@@ -8,15 +8,23 @@
 {% extends "layout.html" %}
 
 {% block content %}
-<div class="column column-left">
-    <div class="section">
+<div class="column column-left" id="main-left-column">
+    <!-- TABS HEADER -->
+    <div style="display: flex; background-color: #1e1e1e; border-bottom: 1px solid #444;">
+        <button id="tab-execution" style="flex: 1; padding: 8px; background: #2a2a2d; color: white; border: none; border-bottom: 2px solid #4CAF50; cursor: pointer; font-size: 14px;">Execution Control</button>
+        <button id="tab-chat" style="flex: 1; padding: 8px; background: transparent; color: #aaa; border: none; cursor: pointer; font-size: 14px;">Assistant Chat</button>
+    </div>
+
+    <!-- VIEW 1: EXECUTION CONTROL (Existing content wrapped in ID) -->
+    <div id="view-execution" class="section" style="border-top: none; display: flex; flex-direction: column;">
         <h2>Objective</h2>
         <textarea id="objective-textarea" placeholder="Enter your high-level objective here..."></textarea>
-        <!-- Interfata de control (radios) -->
+
+        <!-- Existing Execution Config & Controls -->
         <div style="margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; color: #c0c0c0; background-color: #1e1e1e; padding: 10px; border-radius: 4px; border: 1px solid #444;">
             <strong style="grid-column: 1 / 2;">Execution:</strong>
             <strong style="grid-column: 2 / 3;">Summarization:</strong>
-            
+
             <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="independent" checked> Independent</label>
             <label style="cursor: pointer;"><input type="radio" name="summarization_mode" value="automatic" checked> Automatic</label>
             <label style="cursor: pointer;"><input type="radio" name="execution_mode" value="assisted"> Assisted</label>
@@ -40,27 +48,75 @@
                 <span id="timeout-countdown" style="font-size: 0.9em; color: #f39c12; margin-left: 5px;"></span>
             </div>
         </div>
-        <!-- Butoanele principale de control -->
+
         <div class="controls">
             <button id="execute-button">Execute Task</button>
             <button id="pause-button" style="display: none; background-color: #e67e22;">Pause</button>
             <button id="stop-button" style="display: none; background-color: #c0392b;">Stop Task</button>
         </div>
     </div>
+
+    <!-- VIEW 2: CHAT INTERFACE (New) -->
+    <div id="view-chat" class="section" style="border-top: none; display: none; flex-direction: column; height: 100%;">
+
+        <!-- Chat Toolbar -->
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; gap: 10px;">
+             <!-- Left side: Action Plan Status -->
+             <button id="action-plan-status-btn" style="background: transparent; border: 1px solid #4CAF50; color: #4CAF50; padding: 4px 10px; font-size: 11px; width: auto; margin: 0; cursor: pointer; display: none;">No Active Plan</button>
+
+             <!-- Right side: Clear Chat and Fullscreen -->
+             <div style="display: flex; gap: 10px; align-items: center;">
+                 <label style="font-size: 12px; color: #aaa; display: flex; align-items: center; gap: 5px; cursor: pointer; margin-right: 5px;">
+                     <input type="checkbox" id="auto-accept-tasks-checkbox"> Auto-Accept Tasks
+                 </label>
+                 <button id="clear-chat-btn" style="background: transparent; border: 1px solid #c0392b; color: #c0392b; padding: 2px 8px; font-size: 12px; width: auto; margin: 0; cursor: pointer;">Clear Chat</button>
+                 <button id="chat-fullscreen-btn" style="background: transparent; border: 1px solid #444; color: #aaa; padding: 2px 8px; font-size: 12px; width: auto; margin: 0; cursor: pointer;">&#x26F6; Fullscreen</button>
+             </div>
+        </div>
+
+        <div id="chat-history" style="flex-grow: 1; background-color: #1e1e1e; border: 1px solid #444; border-radius: 4px; padding: 10px; overflow-y: auto; margin-bottom: 10px; min-height: 200px;">
+            <div id="chat-greeting" style="color: #666; text-align: center; margin-top: 20px;">
+                <p>Chat with the agent about executed tasks.</p>
+            </div>
+        </div>
+
+        <!-- Task Proposal Area (Hidden by default) -->
+        <div id="task-proposal-area" style="display: none; background-color: #2d2d30; border: 1px solid #f39c12; padding: 10px; margin-bottom: 10px; border-radius: 4px;">
+            <strong style="color: #f39c12;">Task Proposal:</strong>
+            <p id="proposal-text" style="margin: 5px 0; color: white;">Agent wants to...</p>
+            <div style="display: flex; gap: 10px;">
+                <button id="accept-proposal-btn" style="background-color: #4CAF50; padding: 5px;">Set Objective & Go to Execute</button>
+                <button id="reject-proposal-btn" style="background-color: #c0392b; padding: 5px;">Cancel</button>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 10px; align-items: flex-end;">
+            <textarea id="chat-input" placeholder="Type your message... (Shift+Enter for new line)" rows="1"></textarea>
+            <button id="send-chat-btn" style="width: auto; padding: 10px 20px; margin: 0; height: 50px;">Send</button>
+        </div>
+        <div id="chat-status" style="height: 20px; color: #aaa; font-size: 0.8em; padding-top: 5px;"></div>
+    </div>
+
+    <!-- LOG SECTION (Shared) -->
     <div class="section is-flexible">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
             <h2 style="margin: 0;">Agent Execution Log (Live)</h2>
             <div style="display: flex; gap: 5px;">
                 <button id="mode-actions-btn" style="padding: 4px 12px; font-size: 0.85em; background-color: #4CAF50; border: none; color: white; border-radius: 3px; cursor: pointer;">Actions</button>
                 <button id="mode-commands-btn" style="padding: 4px 12px; font-size: 0.85em; background-color: #555; border: none; color: white; border-radius: 3px; cursor: pointer;">Commands</button>
+                <button id="log-fullscreen-btn" style="background: transparent; border: 1px solid #444; color: #aaa; padding: 2px 6px; font-size: 14px; cursor: pointer; line-height: 1; width: auto;" title="Toggle Fullscreen">&#x26F6;</button>
             </div>
         </div>
         <textarea id="log-textarea" readonly></textarea>
+        <div id="execution-status" style="padding: 5px; color: #f39c12; font-family: monospace; font-size: 0.9em; min-height: 20px; border-top: 1px solid #333; background-color: #1e1e1e;"></div>
     </div>
 </div>
-<div class="column column-right">
-    <div class="section is-flexible">
-        <h2>Remote System Screen (Live)</h2>
+<div class="column column-right" id="main-right-column">
+    <div class="section is-flexible" id="vm-screen">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+            <h2 style="margin: 0;">Remote System Screen (Live)</h2>
+            <button id="screen-fullscreen-btn" style="background: transparent; border: 1px solid #444; color: #aaa; padding: 2px 6px; font-size: 14px; cursor: pointer; line-height: 1; width: auto;" title="Toggle Fullscreen">&#x26F6;</button>
+        </div>
         <textarea id="vm-textarea" readonly></textarea>
     </div>
 </div>
@@ -476,6 +532,29 @@ document.addEventListener('DOMContentLoaded', () => {
         closeModal('approval');
         closeModal('rejection');
         closeModal('ask');
+
+        // --- Restore Chat View (Persistent Logic) ---
+        const isTaskFromChat = sessionStorage.getItem('isTaskFromChat') === 'true';
+        // We only trigger this if we are LIVE on the page when it finishes.
+        // If we just loaded the page and handled it via initial_state, pendingChatAnalysis would have cleared isTaskFromChat already.
+
+        if (isTaskFromChat) {
+            console.log("Restoring Chat View (Task finished live)...");
+            const wasChatFullscreen = sessionStorage.getItem('wasChatFullscreen') === 'true';
+
+            switchTab('chat');
+
+            if (wasChatFullscreen && !isChatFullscreen) {
+                toggleFullscreen();
+            }
+
+            socket.emit('analyze_task_result');
+
+            sessionStorage.removeItem('isTaskFromChat');
+            sessionStorage.removeItem('wasChatFullscreen');
+            // Ensure pending flag is cleared just in case
+            sessionStorage.removeItem('pendingChatAnalysis');
+        }
     });
 
     socket.on('task_paused', () => {
@@ -499,25 +578,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // --- Command Execution Countdown ---
-    socket.on('command_exec_start', (data) => {
-        if (timeoutCountdown) {
-            timeoutCountdown.textContent = `(${data.timeout}s)`;
-        }
-    });
-
-    socket.on('command_exec_update', (data) => {
-        if (timeoutCountdown) {
-            timeoutCountdown.textContent = `(${data.remaining}s remaining)`;
-        }
-    });
-
-    socket.on('command_exec_done', () => {
-        if (timeoutCountdown) {
-            timeoutCountdown.textContent = '';
-        }
-    });
-
     socket.on('timeout_updated', (data) => {
         if (commandTimeoutInput) {
             commandTimeoutInput.value = data.timeout;
@@ -526,68 +586,49 @@ document.addEventListener('DOMContentLoaded', () => {
         appendLog(`--- Timeout updated to ${data.timeout} seconds ---`);
     });
 
-    // --- Thinking Indicator with In-Place Timer ---
-    let thinkingLineIndex = -1; // Track where the thinking line is
+    // --- Status Bar Logic (Thinking & Execution) ---
+    const executionStatusDiv = document.getElementById('execution-status');
 
+    function updateExecutionStatus(text) {
+        if (executionStatusDiv) {
+            executionStatusDiv.textContent = text;
+        }
+    }
+
+    // --- Thinking Indicator Handlers ---
     socket.on('thinking_start', (data) => {
-        const thinkingText = `Thinking... (${data.timeout}s timeout)`;
-        appendLog(thinkingText);
-        // Remember that the last line is our thinking line
-        const lines = logTextarea.value.split('\n');
-        thinkingLineIndex = lines.length - 1;
+        updateExecutionStatus(`Thinking... (${data.timeout}s timeout)`);
     });
 
     socket.on('thinking_update', (data) => {
-        if (thinkingLineIndex >= 0) {
-            const lines = logTextarea.value.split('\n');
-            // Update the thinking line in-place
-            lines[thinkingLineIndex] = `Thinking... (${data.remaining}s remaining)`;
-            logTextarea.value = lines.join('\n');
-            logTextarea.scrollTop = logTextarea.scrollHeight;
-        }
+        updateExecutionStatus(`Thinking... (${data.remaining}s remaining)`);
     });
 
     socket.on('thinking_end', () => {
-        if (thinkingLineIndex >= 0) {
-            // Remove the thinking line
-            const lines = logTextarea.value.split('\n');
-            lines.splice(thinkingLineIndex, 1);
-            logTextarea.value = lines.join('\n');
-            thinkingLineIndex = -1;
-            logTextarea.scrollTop = logTextarea.scrollHeight;
-        }
+        updateExecutionStatus('');
     });
 
-    // --- Command Execution Timer with In-Place Countdown ---
-    let commandExecLineIndex = -1; // Track where the command execution line is
-
+    // --- Command Execution Timer Handlers ---
     socket.on('command_exec_start', (data) => {
-        const commandText = `Executing command... (${data.timeout}s timeout)`;
-        appendLog(commandText);
-        // Remember that the last line is our command execution line
-        const lines = logTextarea.value.split('\n');
-        commandExecLineIndex = lines.length - 1;
+        // Keep updating the header countdown if present
+        if (timeoutCountdown) {
+             timeoutCountdown.textContent = `(${data.timeout}s)`;
+        }
+        updateExecutionStatus(`Executing command... (${data.timeout}s timeout)`);
     });
 
     socket.on('command_exec_update', (data) => {
-        if (commandExecLineIndex >= 0) {
-            const lines = logTextarea.value.split('\n');
-            // Update the command execution line in-place
-            lines[commandExecLineIndex] = `Executing command... (${data.remaining}s remaining)`;
-            logTextarea.value = lines.join('\n');
-            logTextarea.scrollTop = logTextarea.scrollHeight;
+        if (timeoutCountdown) {
+             timeoutCountdown.textContent = `(${data.remaining}s remaining)`;
         }
+        updateExecutionStatus(`Executing command... (${data.remaining}s remaining)`);
     });
 
     socket.on('command_exec_end', () => {
-        if (commandExecLineIndex >= 0) {
-            // Remove the command execution line
-            const lines = logTextarea.value.split('\n');
-            lines.splice(commandExecLineIndex, 1);
-            logTextarea.value = lines.join('\n');
-            commandExecLineIndex = -1;
-            logTextarea.scrollTop = logTextarea.scrollHeight;
+        if (timeoutCountdown) {
+             timeoutCountdown.textContent = '';
         }
+        updateExecutionStatus('');
     });
 
     // Handler-ul central pentru starea initiala (la conectare/reconectare)
@@ -630,6 +671,30 @@ document.addEventListener('DOMContentLoaded', () => {
             pauseButton.style.display = 'none';
             objectiveTextarea.disabled = false;
             setControlsDisabled(false);
+
+            // --- NEW: Check for Pending Chat Analysis (from page navigation) ---
+            const pendingAnalysis = sessionStorage.getItem('pendingChatAnalysis') === 'true';
+
+            if (pendingAnalysis) {
+                console.log("Found pending chat analysis from previous session/page.");
+
+                // 1. Restore Chat View
+                switchTab('chat');
+
+                // 2. Restore Fullscreen if needed
+                const wasChatFullscreen = sessionStorage.getItem('wasChatFullscreen') === 'true';
+                if (wasChatFullscreen && !isChatFullscreen) {
+                    toggleFullscreen();
+                }
+
+                // 3. Trigger Analysis (The task is already done)
+                socket.emit('analyze_task_result');
+
+                // 4. Clear Flags
+                sessionStorage.removeItem('pendingChatAnalysis');
+                sessionStorage.removeItem('isTaskFromChat');
+                sessionStorage.removeItem('wasChatFullscreen');
+            }
         }
     });
 
@@ -638,6 +703,396 @@ document.addEventListener('DOMContentLoaded', () => {
         // Reload VM screen when history updates
         loadVMScreen();
     });
+
+    // --- CHAT & TABS LOGIC ---
+    const tabExecution = document.getElementById('tab-execution');
+    const tabChat = document.getElementById('tab-chat');
+    const viewExecution = document.getElementById('view-execution');
+    const viewChat = document.getElementById('view-chat');
+
+    const chatInput = document.getElementById('chat-input');
+    const sendChatBtn = document.getElementById('send-chat-btn');
+    const chatHistory = document.getElementById('chat-history');
+    const chatStatus = document.getElementById('chat-status');
+    const clearChatBtn = document.getElementById('clear-chat-btn');
+    const chatFullscreenBtn = document.getElementById('chat-fullscreen-btn');
+    const mainLeftColumn = document.getElementById('main-left-column');
+
+    const taskProposalArea = document.getElementById('task-proposal-area');
+    const proposalText = document.getElementById('proposal-text');
+    const acceptProposalBtn = document.getElementById('accept-proposal-btn');
+    const rejectProposalBtn = document.getElementById('reject-proposal-btn');
+
+    let isChatFullscreen = false;
+    // Note: isTaskFromChat and wasChatFullscreen now use sessionStorage for persistence
+
+    // --- 1. Tab Switching ---
+    window.switchTab = function(tab) {
+        // Update Buttons
+        document.getElementById('tab-execution').style.borderBottom = tab === 'execution' ? '2px solid #4CAF50' : 'none';
+        document.getElementById('tab-execution').style.color = tab === 'execution' ? 'white' : '#aaa';
+
+        document.getElementById('tab-chat').style.borderBottom = tab === 'chat' ? '2px solid #4CAF50' : 'none';
+        document.getElementById('tab-chat').style.color = tab === 'chat' ? 'white' : '#aaa';
+
+        // Update Views
+        document.getElementById('view-execution').style.display = tab === 'execution' ? 'flex' : 'none';
+        document.getElementById('view-chat').style.display = tab === 'chat' ? 'flex' : 'none';
+
+        // --- FIX: Auto-scroll to bottom when switching to Chat ---
+        if (tab === 'chat') {
+            setTimeout(() => {
+                const chatHistory = document.getElementById('chat-history');
+                if (chatHistory) {
+                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                }
+            }, 10); // Small delay to ensure DOM is rendered
+        }
+    };
+    tabExecution.onclick = () => switchTab('execution');
+    tabChat.onclick = () => switchTab('chat');
+
+    // --- 2. Fullscreen Logic ---
+    function toggleFullscreen() {
+        isChatFullscreen = !isChatFullscreen;
+        if (isChatFullscreen) {
+            mainLeftColumn.classList.add('fullscreen-chat-mode');
+            chatFullscreenBtn.innerHTML = "&#x2715; Exit Fullscreen";
+            chatFullscreenBtn.style.color = "#f39c12";
+            chatFullscreenBtn.style.borderColor = "#f39c12";
+        } else {
+            mainLeftColumn.classList.remove('fullscreen-chat-mode');
+            chatFullscreenBtn.innerHTML = "&#x26F6; Fullscreen";
+            chatFullscreenBtn.style.color = "#aaa";
+            chatFullscreenBtn.style.borderColor = "#444";
+        }
+    }
+    chatFullscreenBtn.onclick = toggleFullscreen;
+
+    // --- 3. Chat Messages ---
+    function addChatMessage(role, text) {
+        // Remove greeting if present
+        const greeting = document.getElementById('chat-greeting');
+        if (greeting) greeting.remove();
+
+        const div = document.createElement('div');
+        // Apply the new CSS classes
+        div.className = `chat-bubble ${role === 'user' ? 'user' : 'agent'}`;
+
+        if (role === 'user') {
+            div.innerHTML = `<strong>You:</strong> ${text.replace(/\n/g, '<br>')}`;
+        } else {
+            div.innerHTML = `<strong>Agent:</strong> ${text.replace(/\n/g, '<br>')}`;
+        }
+
+        chatHistory.appendChild(div);
+        chatHistory.scrollTop = chatHistory.scrollHeight;
+    }
+
+    // --- Updated Input Logic (Textarea) ---
+
+    chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault(); // Prevent new line
+            sendChatBtn.click();
+        }
+    });
+
+    sendChatBtn.onclick = () => {
+        const msg = chatInput.value.trim();
+        if (!msg) return;
+
+        addChatMessage('user', msg);
+        chatInput.value = '';
+        // Optional: Reset height if you implemented auto-grow
+
+        socket.emit('send_chat_message', { message: msg });
+    };
+
+    socket.on('chat_response', (data) => addChatMessage(data.role, data.content));
+
+    socket.on('chat_status', (data) => {
+        chatStatus.textContent = (data.status === 'thinking') ? "Agent is thinking..." : "";
+    });
+
+    // --- 4. Persistent History Restoration ---
+    socket.on('initial_state', (data) => {
+        // ... existing initialization handled elsewhere ...
+
+        // Restore Chat
+        if (data.chat_history && Array.isArray(data.chat_history)) {
+            chatHistory.innerHTML = ''; // Clear
+            if (data.chat_history.length === 0) {
+                 chatHistory.innerHTML = '<div id="chat-greeting" style="color: #666; text-align: center; margin-top: 20px;"><p>Chat with the agent about executed tasks.</p></div>';
+            } else {
+                data.chat_history.forEach(msg => addChatMessage(msg.role, msg.content));
+            }
+        }
+    });
+
+    // --- 5. Clear Chat ---
+    clearChatBtn.onclick = () => {
+        if(confirm("Are you sure you want to clear the chat history?")) {
+            socket.emit('clear_chat');
+        }
+    };
+
+    socket.on('chat_history_cleared', () => {
+        chatHistory.innerHTML = '<div id="chat-greeting" style="color: #666; text-align: center; margin-top: 20px;"><p>Chat with the agent about executed tasks.</p></div>';
+    });
+
+    // --- 6. Action Plan Status Button & Modal ---
+    const actionPlanBtn = document.getElementById('action-plan-status-btn');
+    const actionPlanModal = document.getElementById('action-plan-modal');
+    const actionPlanOverlay = document.getElementById('action-plan-modal-overlay');
+    const actionPlanContent = document.getElementById('action-plan-content');
+
+    // Function to update action plan status button
+    function updateActionPlanButton(planData) {
+        if (!planData || !planData.exists) {
+            actionPlanBtn.style.display = 'none';
+            return;
+        }
+
+        actionPlanBtn.style.display = 'block';
+
+        // Update button text with current progress
+        if (planData.next_step_index) {
+            actionPlanBtn.textContent = `AP: Step ${planData.next_step_index}/${planData.total_steps} in progress...`;
+            actionPlanBtn.style.borderColor = '#f39c12';
+            actionPlanBtn.style.color = '#f39c12';
+        } else {
+            actionPlanBtn.textContent = `AP: All ${planData.total_steps} steps completed ✓`;
+            actionPlanBtn.style.borderColor = '#4CAF50';
+            actionPlanBtn.style.color = '#4CAF50';
+        }
+    }
+
+    // Function to format and display action plan in modal
+    function displayActionPlan(planData) {
+        if (!planData || !planData.exists) {
+            actionPlanContent.innerHTML = '<p style="color: #666; text-align: center;">No active action plan</p>';
+            document.getElementById('clear-plan-btn').style.display = 'none';
+            return;
+        }
+
+        document.getElementById('clear-plan-btn').style.display = 'block';
+
+        let html = `<div style="margin-bottom: 15px;">
+                        <strong style="color: #7aa5d2; font-size: 16px;">${planData.title}</strong>
+                        <div style="color: #888; font-size: 11px; margin-top: 5px;">
+                            Progress: ${planData.completed_steps}/${planData.total_steps} completed
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px;">`;
+
+        planData.steps.forEach((step, idx) => {
+            const stepNum = idx + 1;
+            const isCompleted = step.completed;
+            const isCurrent = stepNum === planData.next_step_index;
+
+            const checkbox = isCompleted ? '☑' : '☐';
+            const textColor = isCompleted ? '#81c784' : (isCurrent ? '#f39c12' : '#c0c0c0');
+            const fontWeight = isCurrent ? 'bold' : 'normal';
+
+            html += `<div style="margin-bottom: 10px; padding: 8px; background-color: ${isCurrent ? '#2d2d30' : 'transparent'}; border-left: 3px solid ${isCurrent ? '#f39c12' : 'transparent'}; border-radius: 2px;">
+                        <span style="color: ${textColor}; font-weight: ${fontWeight};">
+                            ${checkbox} Step ${stepNum}. ${step.objective}
+                        </span>
+                     </div>`;
+        });
+
+        if (planData.next_step_index) {
+            html += `</div><div style="margin-top: 15px; padding: 10px; background-color: #2d2d30; border: 1px solid #f39c12; border-radius: 4px; color: #f39c12; font-size: 12px;">
+                        <strong>Next:</strong> Step ${planData.next_step_index} - Use "Request Task" in chat to initiate.
+                     </div>`;
+        } else {
+            html += `</div><div style="margin-top: 15px; padding: 10px; background-color: #2d2d30; border: 1px solid #4CAF50; border-radius: 4px; color: #4CAF50; font-size: 12px;">
+                        All steps completed! Plan finished.
+                     </div>`;
+        }
+
+        actionPlanContent.innerHTML = html;
+    }
+
+    // Request action plan data from server
+    function requestActionPlan() {
+        socket.emit('get_action_plan');
+    }
+
+    // Listen for action plan data from server
+    socket.on('action_plan_data', (data) => {
+        updateActionPlanButton(data);
+        displayActionPlan(data);
+    });
+
+    // Listen for action plan cleared event
+    socket.on('action_plan_cleared', () => {
+        actionPlanBtn.style.display = 'none';
+        actionPlanContent.innerHTML = '<p style="color: #666; text-align: center;">No active action plan</p>';
+        document.getElementById('clear-plan-btn').style.display = 'none';
+        closeModal('action-plan');
+    });
+
+    // Open modal when button clicked
+    actionPlanBtn.onclick = () => {
+        requestActionPlan();
+        showModal('action-plan');
+    };
+
+    // Clear plan function (called from modal button)
+    window.clearActionPlan = () => {
+        if (confirm('Are you sure you want to clear the current action plan?')) {
+            socket.emit('clear_action_plan');
+        }
+    };
+
+    // Auto-refresh action plan status every 3 seconds when chat tab is active
+    setInterval(() => {
+        const chatView = document.getElementById('view-chat');
+        if (chatView && chatView.style.display !== 'none') {
+            requestActionPlan();
+        }
+    }, 3000);
+
+    // Initial load
+    requestActionPlan();
+
+    // --- 7. Task Proposal & Transition Logic ---
+
+    // NEW: Handle Auto-Accept Checkbox State
+    const autoAcceptCheckbox = document.getElementById('auto-accept-tasks-checkbox');
+
+    // Load saved state
+    if (sessionStorage.getItem('autoAcceptTasks') === 'true') {
+        autoAcceptCheckbox.checked = true;
+    }
+
+    // Save state on change
+    autoAcceptCheckbox.addEventListener('change', (e) => {
+        sessionStorage.setItem('autoAcceptTasks', e.target.checked);
+    });
+
+    socket.on('chat_task_proposal', (data) => {
+        // Define the acceptance logic as a reusable function
+        const executeProposal = () => {
+             // 1. Save State to Session Storage (Persistent)
+            sessionStorage.setItem('isTaskFromChat', 'true');
+            sessionStorage.setItem('wasChatFullscreen', isChatFullscreen ? 'true' : 'false');
+
+            // 2. Exit Fullscreen if active (to show execution)
+            if (isChatFullscreen) {
+                toggleFullscreen();
+            }
+
+            // 3. Switch to execution tab
+            switchTab('execution');
+
+            // 4. Set objective
+            const objectiveTextarea = document.getElementById('objective-textarea');
+            if (objectiveTextarea) {
+                objectiveTextarea.value = data.objective;
+                objectiveTextarea.dispatchEvent(new Event('input'));
+            }
+
+            // 5. AUTO EXECUTE
+            const executeButton = document.getElementById('execute-button');
+            if (executeButton) {
+                console.log("Auto-executing task from chat...");
+                executeButton.click();
+            }
+        };
+
+        // CHECK AUTO-ACCEPT STATUS
+        if (autoAcceptCheckbox.checked) {
+            // Auto-accept logic
+            addChatMessage('assistant', `[Auto-Accepting Task: "${data.objective}"]`);
+            executeProposal();
+        } else {
+            // Manual logic (Show UI)
+            taskProposalArea.style.display = 'block';
+            proposalText.textContent = data.objective;
+
+            acceptProposalBtn.onclick = () => {
+                executeProposal();
+                // Hide proposal UI
+                taskProposalArea.style.display = 'none';
+                addChatMessage('assistant', `[Task "${data.objective}" initiated.]`);
+            };
+
+            rejectProposalBtn.onclick = () => {
+                taskProposalArea.style.display = 'none';
+                addChatMessage('user', '[Task proposal declined]');
+            };
+        }
+    });
+
+    // --- Fullscreen Logic (Chat, Log, Screen) ---
+    const fullscreenStyle = document.createElement('style');
+    fullscreenStyle.innerHTML = `
+        /* --- CHAT FULLSCREEN --- */
+        .fullscreen-chat-mode {
+            position: fixed !important; top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 9999; background-color: #121212; padding: 20px;
+            display: flex !important; flex-direction: column;
+            width: 100% !important; height: 100% !important;
+            box-sizing: border-box;
+        }
+        .fullscreen-chat-mode > * { display: none !important; }
+        .fullscreen-chat-mode #view-chat {
+            display: flex !important; flex-grow: 1; width: 100%; height: 100%; max-width: 100%;
+        }
+
+        /* --- LOG FULLSCREEN --- */
+        .fullscreen-log-mode { overflow: hidden; }
+        .fullscreen-log-mode #log-section-container {
+            position: fixed !important; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 9999; background-color: #121212; padding: 20px; box-sizing: border-box;
+            display: flex; flex-direction: column;
+        }
+        .fullscreen-log-mode #log-textarea { flex-grow: 1; height: 100% !important; }
+
+        /* --- SCREEN FULLSCREEN (FIXED) --- */
+        .fullscreen-screen-mode { overflow: hidden; }
+        .fullscreen-screen-mode #main-right-column {
+            position: fixed !important; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 9999; background-color: #121212; padding: 10px; box-sizing: border-box;
+            display: flex !important; flex-direction: column;
+        }
+        /* Ensure the section inside the column fills the height */
+        .fullscreen-screen-mode #main-right-column .section {
+            flex-grow: 1; display: flex; flex-direction: column; height: 100%;
+        }
+        /* Target the correct textarea ID */
+        .fullscreen-screen-mode #vm-textarea {
+            flex-grow: 1; height: 100% !important;
+        }
+    `;
+    document.head.appendChild(fullscreenStyle);
+
+    // Identify container for the log to maximize
+    const logSection = document.getElementById('log-textarea').closest('.section');
+    if(logSection) logSection.id = 'log-section-container';
+
+    // --- Event Listeners ---
+
+    // 1. Log Fullscreen
+    const logBtn = document.getElementById('log-fullscreen-btn');
+    if(logBtn) {
+        logBtn.addEventListener('click', () => {
+            document.body.classList.toggle('fullscreen-log-mode');
+        });
+    }
+
+    // 2. Screen Fullscreen
+    const screenBtn = document.getElementById('screen-fullscreen-btn');
+    if(screenBtn) {
+        screenBtn.addEventListener('click', () => {
+            document.body.classList.toggle('fullscreen-screen-mode');
+            // Trigger resize event for xterm.js if needed
+            window.dispatchEvent(new Event('resize'));
+        });
+    }
 
     // Initialize views on page load
     loadVMScreen();

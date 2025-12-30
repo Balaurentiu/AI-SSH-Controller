@@ -18,6 +18,10 @@ SESSION_FILE_PATH = os.path.join(APP_DIR, 'session.json')
 EXECUTION_LOG_FILE_PATH = os.path.join(KEYS_DIR, 'execution_log.txt')
 # --- NOU: Fisierul pentru memoria de lucru a agentului (LLM Context) ---
 EXECUTION_LOG_LLM_CONTEXT_PATH = os.path.join(KEYS_DIR, 'execution_log_llm_context.txt')
+# --- NOU: Fisierul pentru istoricul conversatiei chat ---
+CHAT_LOG_FILE_PATH = os.path.join(KEYS_DIR, 'chat_history.json')
+# --- NOU: Fisierul pentru planul de actiune multi-step ---
+ACTION_PLAN_FILE_PATH = os.path.join(KEYS_DIR, 'action_plan.json')
 
 # Asiguram ca directorul pentru chei exista la importarea modulului
 try:
@@ -38,7 +42,7 @@ def get_config():
         print(f"Config file not found at {CONFIG_FILE_PATH}. Creating with defaults.")
         # Sectiuni si valori default
         config['General'] = {'provider': 'ollama', 'gemini_api_key': '', 'anthropic_api_key': ''}
-        config['Agent'] = {'model_name': 'llama3:latest', 'max_steps': '50', 'summarization_threshold': '15000', 'command_timeout': '120', 'llm_timeout': '120'}
+        config['Agent'] = {'model_name': 'llama3:latest', 'max_steps': '50', 'summarization_threshold': '15000', 'command_timeout': '120', 'llm_timeout': '120', 'chat_history_message_count': '20'}
         # Calea SSH default este acum relativa la KEYS_DIR
         config['System'] = {'ip_address': '', 'username': '', 'ssh_port': '22', 'ssh_key_path': os.path.join(KEYS_DIR, 'id_rsa')}
         config['Ollama'] = {'api_url': 'http://localhost:11434'}
@@ -92,6 +96,68 @@ Instructions:
 
         config['OllamaSearchSummaryPrompt'] = {'template': default_search_summary}
         config['CloudSearchSummaryPrompt'] = {'template': default_search_summary}
+
+        # --- NEW: Chat Prompt ---
+        # Available variables: {objective}, {system_info}, {history}, {chat_history}, {user_message}
+        default_chat_prompt = """You are an intelligent DevOps Assistant connected to a remote system.
+You have read access to the EXECUTION HISTORY of tasks performed so far.
+GENERAL TONE: Helpful, technical, concise.
+
+CONTEXT:
+Current Objective: {objective}
+System Info: {system_info}
+
+EXECUTION HISTORY (Read-only memory of past actions):
+{history}
+
+USER MESSAGE:
+{user_message}
+
+INSTRUCTIONS:
+1. ANALYZE HISTORY: Always check the 'EXECUTION HISTORY' first. If the user asks about past errors, outputs, or configs, answer strictly based on what is logged there.
+2. SYSTEM STATUS: If the user asks about system state (uptime, disk space, services) and this info is NOT in the history, you must request a new task to check it.
+
+3. PROPOSING TASKS: If the user wants to act (install software, fix an error, check the status), DO NOT claim you are doing it. You cannot execute commands directly in this chat. Instead, PROPOSE the task using this exact format:
+<<REQUEST_TASK: [Clear, concise objective for the new task]>>
+
+Example:
+User: "Check why Apache isn't running."
+You: "I don't see the status in the recent logs. I can check the service for you.
+<<REQUEST_TASK: Check apache2 service status and logs>>"
+
+4. Search in the full execution history log.
+* WHEN TO USE:
+a). Use this when the current context is summarised, and you have lost track of specific file paths, configuration values, command outputs from previous steps or any other details that you need.
+b). When the user asks to modify/fix a specific file from a previous task, and its content or name is not visible in the current context.
+c). When you need to find something from a large output that was summarised to prevent flooding the context window.
+
+*HOW TO SRCH: Use the format below.
+
+REASON: [Explain what information you are looking for and why.]
+SRCH: [Keywords or specific string to find in logs]
+
+A result of the search will be added to the current history, and you will have access to the requested data.
+
+5. Create an action plan with multiple consecutive objectives that need to be completed to achieve the master goal.
+* WHEN TO USE:
+a). When a single REQUEST_TASK action is not enough to complete the master goal.
+b). When the user or the situation requests multiple tasks to be completed.
+c). When the request is more complex and needs to be split into multiple tasks.
+
+* HOW TO USE IT: Use the format below.
+
+Example:
+<<ACTION_PLAN_START>>
+Title: My Workflow
+Step 1. First task
+Step 2: Second task (colon works)
+Step 3) Third task (parenthesis works)
+step 4 Fourth task (lowercase works)
+<<ACTION_PLAN_STOP>>
+
+The application will help you keep track of the executed steps and when the plan is complete or not.
+"""
+        config['ChatPrompt'] = {'template': default_chat_prompt}
 
         # Validator prompts with system_info for OS-specific validation
         default_validator_prompt = """Validate this command for safety and output size.

@@ -38,6 +38,12 @@ logs/
 keys/connections.json
 connections.json
 
+# Runtime Data Files
+keys/action_plan.json
+keys/chat_history.json
+action_plan.json
+chat_history.json
+
 # Backups
 *.old
 *.bak

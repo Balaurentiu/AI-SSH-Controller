@@ -66,7 +66,8 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 - Command generation via LLM with retry logic
 - Supports multiple action types: COMMAND, SRCH, WRITE_FILE, ASK, TIMEOUT, REPORT
 - Command validation (Independent mode uses LLM validator, Assisted mode requires user approval)
-- History summarization when threshold exceeded
+- History summarization when LLM context exceeds threshold (default: 15000 chars)
+- Step output summarization when command output exceeds 30% of summarization threshold (cloud providers only)
 - Execution modes: Independent (auto-validate), Assisted (user approval), with optional ASK capability
 - LangChain integration for search result and step output summarization (cloud providers)
 
@@ -96,6 +97,8 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 - Handles Ollama, Gemini, and Anthropic Claude API calls
 - Timeout handling and response parsing
 - LangChain integration for advanced prompting
+- Progressive LLM nudging: 5 retry attempts with escalating pressure on empty responses
+- Smart retry system: Injects "SYSTEM ERROR" warnings to force LLM response
 
 **log_manager.py** - Unified logging architecture (NEW)
 - `BaseLogManager` - Manages immutable full log in `execution_log.txt` (append-only)
@@ -148,13 +151,13 @@ The agent can perform multiple actions each step:
 
 **Command Execution Flow:**
 1. LLM generates action with REASON (can include TIMEOUT adjustment)
-2. If COMMAND: Validation (Independent: LLM validator, Assisted: user approval)
+2. If COMMAND: Validation (Independent: LLM validator with 10 retries, Assisted: user approval)
 3. Pager detection and prevention (adds `SYSTEMD_PAGER=cat PAGER=cat` prefix)
 4. SSH execution with timeout (reads from global_state or ephemeral TIMEOUT value)
-5. Retry logic (3 attempts) with SSH connectivity check
+5. Retry logic (3 attempts) with SSH connectivity check; **fail-fast on timeout** (if connection alive but command slow, abort retries immediately)
 6. Result logged to full log and LLM context file
 7. If SRCH: Search full log and add results to LLM context
-8. If WRITE_FILE: Create file via echo/cat, log content to full log for future SRCH
+8. If WRITE_FILE: Create file via Base64 encoding (OS-aware, sudo-aware), log content to full log for future SRCH
 
 **Timeout Management:**
 - Stored in `global_state['command_timeout']` for live updates
@@ -171,6 +174,7 @@ The agent can perform multiple actions each step:
   - OllamaStepSummaryPrompt / CloudStepSummaryPrompt (step output summarization - NEW)
   - OllamaSearchSummaryPrompt / CloudSearchSummaryPrompt (search results summarization - NEW)
 - Note: CloudPrompt applies to both Gemini and Anthropic providers
+- Legacy note: config.ini.new template contains GeminiPrompt sections for backwards compatibility, but the code uses CloudPrompt for both Gemini and Anthropic
 - Variables available: `{objective}`, `{history}`, `{system_info}`, `{command}`, `{sudo_available}`, `{reason}`, `{summarization_threshold}`, `{command_timeout}`, `{output}`, `{results}`
 - All prompts include SRCH documentation to enable history search capability
 
@@ -243,7 +247,9 @@ The system maintains two separate memory stores:
 
 **WRITE_FILE Capability:**
 - Agent can create files on remote system using `WRITE_FILE: <path>\nCONTENT:\n<content>\nEND_CONTENT`
-- Implementation: Uses `echo` or `cat` with heredoc to write content via SSH
+- Implementation: Uses Base64 encoding for safe injection (prevents heredoc/escape issues)
+- OS-aware: Uses PowerShell (`[Convert]::FromBase64String`) for Windows, bash/tee for Linux
+- Sudo-aware: Automatically uses sudo for system paths when available
 - File content is logged to Full Log for audit trail and future SRCH operations
 - Enables agent to create config files, scripts, or documents
 - Combined with SRCH, agent can recall exact content of files it created
@@ -272,6 +278,7 @@ The system maintains two separate memory stores:
 - `[OllamaPrompt]`, `[CloudPrompt]`, `[OllamaValidatePrompt]`, `[CloudValidatePrompt]`, etc. - Prompt templates
 - `[OllamaStepSummaryPrompt]`, `[CloudStepSummaryPrompt]` - Step output summarization prompts (NEW)
 - `[OllamaSearchSummaryPrompt]`, `[CloudSearchSummaryPrompt]` - Search results summarization prompts (NEW)
+- Note: Legacy `[GeminiPrompt]` sections exist in config.ini.new template for backwards compatibility, but code uses `[CloudPrompt]`
 
 **Persistent files:**
 - `/app/keys/id_rsa` - SSH private key

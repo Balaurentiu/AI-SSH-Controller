@@ -23,9 +23,10 @@
         .config-trigger.success .summary-text { color: #81c784; }
         .config-trigger h3 { margin: 5px 0; font-size: 14px; color: #7aa5d2; }
         .config-trigger .summary-text { font-size: 12px; color: #c0c0c0; font-family: monospace; min-height: 14px; }
-        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); z-index: 1000; display: none; }
+        /* Updated Z-Index to 20000+ to ensure they appear ABOVE fullscreen views (which are 9999) */
+        .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.7); z-index: 20000; display: none; }
         .modal-overlay.active { display: block; }
-        .modal-content { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: #2a2a2d; padding: 20px; border-radius: 8px; border: 1px solid #444; z-index: 1001; display: none; max-width: 90%; }
+        .modal-content { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background-color: #2a2a2d; padding: 20px; border-radius: 8px; border: 1px solid #444; z-index: 20001; display: none; max-width: 90%; box-shadow: 0 10px 25px rgba(0,0,0,0.5); }
         .modal-content.active { display: block; }
         #agent-modal { min-width: 650px; }
         #system-modal { min-width: 800px; width: auto }
@@ -78,6 +79,47 @@
         #ask-modal { width: 70vw; max-width: 1100px; max-height: 80vh; overflow-y: auto; }
         #ask-modal.active { display: flex; flex-direction: column; }
         #ask-modal > div, #ask-modal textarea { flex-shrink: 0; }
+
+        /* Chat Bubble Styles */
+        .chat-bubble {
+            margin-bottom: 10px;
+            padding: 10px 15px;
+            border-radius: 8px;
+            max-width: 85%;
+            width: fit-content; /* Key fix for width */
+            word-wrap: break-word;
+            line-height: 1.4;
+        }
+
+        .chat-bubble.user {
+            background-color: #0e639c;
+            margin-left: auto; /* Pushes to right */
+            border-bottom-right-radius: 2px;
+        }
+
+        .chat-bubble.agent {
+            background-color: #333;
+            margin-right: auto; /* Pushes to left */
+            border-bottom-left-radius: 2px;
+        }
+
+        /* Textarea Styles for Chat Input */
+        #chat-input {
+            flex-grow: 1;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            border: 1px solid #555;
+            padding: 10px;
+            border-radius: 4px;
+            resize: none; /* Prevent manual resize */
+            height: 50px; /* Fixed height or auto-grow via JS */
+            font-family: inherit;
+            overflow-y: auto;
+        }
+        #chat-input:focus {
+            outline: none;
+            border-color: #0e639c;
+        }
     </style>
 </head>
 <body>
@@ -100,7 +142,7 @@
     <div id="objective-empty-modal-overlay" class="modal-overlay"></div>
     <div id="objective-empty-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="objective-empty">&times;</span> <h2>Objective Missing</h2> <p>Please enter an objective to begin the task.</p> <button onclick="closeModal('objective-empty')" style="width: auto;">OK</button> </div>
     <div id="reset-confirm-modal-overlay" class="modal-overlay"></div>
-    <div id="reset-confirm-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="reset-confirm">&times;</span> <h2>Confirm Reset</h2> <p>Are you sure you want to reset the agent's entire memory and screen output? This cannot be undone.</p> <div style="display: flex; gap: 10px; margin-top: 20px;"> <button onclick="closeModal('reset-confirm')" style="background-color: #5c5c5c;">Cancel</button> <button onclick="socket.emit('reset_agent', {data: 'reset'}); closeModal('reset-confirm');" style="background-color: #9c0e35;">Reset</button> </div> </div>
+    <div id="reset-confirm-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="reset-confirm">&times;</span> <h2>Confirm Reset</h2> <p>Are you sure you want to reset the agent's entire memory and screen output? This cannot be undone.</p> <div style="display: flex; gap: 10px; margin-top: 20px;"> <button onclick="closeModal('reset-confirm')" style="background-color: #5c5c5c;">Cancel</button> <button onclick="socket.emit('reset_agent', {data: 'reset'}); const obj = document.getElementById('objective-textarea'); if(obj) obj.value = ''; sessionStorage.removeItem('savedObjective'); closeModal('reset-confirm');" style="background-color: #9c0e35;">Reset</button> </div> </div>
     <div id="approval-modal-overlay" class="modal-overlay" data-persistent="true"></div>
     <div id="approval-modal" class="modal-content" style="min-width: 700px; max-width: 1000px;"> <span class="modal-close-btn" data-modal-id="approval" style="display: none;">&times;</span> <h2>Command Validation Required</h2> <p style="margin-top: 10px; margin-bottom: 10px;">The agent wants to execute the following command:</p> <div style="margin: 15px 0;"> <div style="color: #aaa; margin-bottom: 5px;">Reason:</div> <div id="command-reason" style="background-color: #1e1e1e; border: 1px solid #444; padding: 10px; border-radius: 4px; margin-bottom: 10px; font-family: monospace; color: #d4d4d4; white-space: pre-wrap; word-wrap: break-word;">Loading...</div> <div style="color: #aaa; margin-bottom: 5px;">Command:</div> <input type="text" id="command-to-approve" style="background-color: #1e1e1e; border: 1px solid #444; padding: 10px; border-radius: 4px; width: 100%; box-sizing: border-box; font-family: monospace; color: #d4d4d4; margin-bottom: 10px;"> <div style="color: #aaa; margin-bottom: 5px;">Modification Reason (optional - explain why you modified the command):</div> <textarea id="command-modification-reason" placeholder="Enter reason for modification if you changed the command..." style="background-color: #1e1e1e; border: 1px solid #444; padding: 10px; border-radius: 4px; width: 100%; box-sizing: border-box; font-family: monospace; color: #d4d4d4; height: 60px; resize: vertical;"></textarea> </div> <div style="display: flex; gap: 10px;"> <button id="approve-command-btn" onclick="socket.emit('approve_command', { approved: true, command: document.getElementById('command-to-approve').value, modification_reason: document.getElementById('command-modification-reason').value}); document.getElementById('command-modification-reason').value=''; closeModal('approval');" style="background-color: #4CAF50;">Approve & Execute</button> <button onclick="showModal('rejection');" style="background-color: #FF5733;">Reject</button> </div> </div>
     <div id="rejection-modal-overlay" class="modal-overlay" data-persistent="true"></div>
@@ -146,7 +188,21 @@
             <button onclick="handleSummarizationDecision(false);" style="background-color: #e67e22; flex: 1;">Continue Without Summarizing</button>
         </div>
     </div>
-    
+
+    <!-- Action Plan Modal -->
+    <div id="action-plan-modal-overlay" class="modal-overlay"></div>
+    <div id="action-plan-modal" class="modal-content" style="min-width: 600px; max-width: 800px;">
+        <span class="modal-close-btn" data-modal-id="action-plan">&times;</span>
+        <h2>Action Plan Status</h2>
+        <div id="action-plan-content" style="background-color: #1e1e1e; border: 1px solid #444; border-radius: 4px; padding: 15px; margin-top: 10px; font-family: monospace; color: #d4d4d4;">
+            <p style="color: #666; text-align: center;">No active action plan</p>
+        </div>
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button onclick="closeModal('action-plan')" style="background-color: #5c5c5c; width: auto; flex: 1;">Close</button>
+            <button id="clear-plan-btn" onclick="clearActionPlan()" style="background-color: #c0392b; width: auto; flex: 1;">Clear Plan</button>
+        </div>
+    </div>
+
     <div id="agent-modal-overlay" class="modal-overlay"></div>
     <div id="agent-modal" class="modal-content"> 
         <span class="modal-close-btn" data-modal-id="agent">&times;</span> 
@@ -192,6 +248,10 @@
                 <label for="llm-timeout">LLM Response Timeout (seconds):</label>
                 <input type="number" id="llm-timeout" value="120" min="30" max="600">
             </div>
+            <div class="settings-item">
+                <label for="chat-history-count">Chat History Message Count:</label>
+                <input type="number" id="chat-history-count" value="20" min="0" max="100">
+            </div>
         </fieldset>
         <button id="save-agent-btn">Save Agent Configuration</button>
     </div>
@@ -199,7 +259,7 @@
     <div id="system-modal-overlay" class="modal-overlay"></div>
     <div id="system-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="system">&times;</span> <h2>Remote System Connection</h2> <div style="display: flex; gap: 20px; align-items: flex-start;"> <div style="flex: 1;"> <h3 style="margin-top: 0; font-size: 16px; color: #7aa5d2;">Saved Connections</h3> <select id="saved-connections-select" size="6" style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 5px; font-family: monospace; min-height: 150px;"> <option value="">-- No saved connections --</option> </select> <div style="display: flex; gap: 10px; margin-top: 10px;"> <button id="load-connection-btn" style="background-color: #0e639c;">Load</button> <button id="delete-connection-btn">Delete</button> </div> </div> <div style="flex: 2;"> <fieldset class="modal-fieldset"> <div class="settings-item"> <label for="system-ip">System IP:</label> <div id="system-ip-status" class="status-label"></div> <input type="text" id="system-ip" placeholder="192.168.1.100"> </div> <div class="settings-item"> <label for="system-username">Username:</label> <input type="text" id="system-username" placeholder="root"> </div> <div class="settings-item"> <label for="ssh-port">SSH Port:</label> <input type="number" id="ssh-port" placeholder="22" value="22" min="1" max="65535"> </div> <div class="settings-item full-width"> <label for="ssh-key-path">SSH Key Path:</label> <input type="text" id="ssh-key-path" placeholder="/app/keys/id_rsa" readonly style="background-color: #333;"> </div> <div class="settings-item full-width with-button"> <div> <label for="deployment-password">Password (for key deployment):</label> <div id="deployment-status" class="status-label"></div> <input type="password" id="deployment-password" placeholder="Enter password to deploy SSH key"> </div> <button id="deploy-key-btn" style="background-color: #e67e22;">Deploy Key</button> </div> </fieldset> <button id="save-system-btn">Save & Test Connection</button> </div> </div> <div id="deploy-log-area" style="display: none; margin-top: 15px;"> <h3 style="font-size: 14px; color: #7aa5d2; margin-bottom: 10px;">Key Deployment Log</h3> <textarea id="deploy-log-textarea" readonly style="width: 100%; height: 100px; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; padding: 5px; font-family: monospace; font-size: 12px;"></textarea> </div> </div>
     <div id="prompt-editor-modal-overlay" class="modal-overlay"></div>
-    <div id="prompt-editor-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="prompt-editor">&times;</span> <h2>Agent Instruction Templates</h2> <div style="display: flex; gap: 10px; margin-bottom: 15px;"> <button id="standard-mode-btn" style="flex: 1; background-color: #0e639c;">Standard Mode</button> <button id="ask-mode-btn" style="flex: 1; background-color: #5c5c5c;">Ask Mode</button> </div> <div class="prompt-editor-container"> <div class="prompt-section"> <label for="ollama-prompt-textarea">Ollama Template</label> <textarea id="ollama-prompt-textarea"></textarea> </div> <div class="prompt-section"> <label for="cloud-prompt-textarea">Cloud Model Template</label> <textarea id="cloud-prompt-textarea"></textarea> </div> </div> <div class="prompt-footer"> <p class="validation-note"> Required variables: <code>{objective}</code>, <code>{history}</code>, <code>{system_info}</code><br> Required keywords: <code>COMMAND:</code>, <code>REPORT:</code> (and <code>ASK:</code> for Ask Mode)<br> The agent parses these keywords to understand what action to take. </p> <div class="footer-controls"> <span id="prompt-validation-status" style="color: #aaa; font-size: 14px;"></span> <button id="save-prompts-btn">Save Templates</button> </div> </div> </div>
+    <div id="prompt-editor-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="prompt-editor">&times;</span> <h2>Instruction Templates</h2> <div style="display: flex; gap: 10px; margin-bottom: 15px;"> <button id="standard-mode-btn" style="flex: 1; background-color: #0e639c;">Standard Mode</button> <button id="ask-mode-btn" style="flex: 1; background-color: #5c5c5c;">Ask Mode</button> <button id="chat-mode-btn" style="flex: 1; background-color: #5c5c5c;">Chat Mode</button> </div> <div class="prompt-editor-container"> <div id="execution-prompts-container" style="display: flex; gap: 20px; flex: 1;"> <div class="prompt-section"> <label for="ollama-prompt-textarea">Ollama Template</label> <textarea id="ollama-prompt-textarea"></textarea> </div> <div class="prompt-section"> <label for="cloud-prompt-textarea">Cloud Model Template</label> <textarea id="cloud-prompt-textarea"></textarea> </div> </div> <div id="chat-prompt-container" style="display: none; flex: 1;"> <div class="prompt-section"> <label for="chat-prompt-textarea">Chat Persona & Rules Template</label> <textarea id="chat-prompt-textarea"></textarea> </div> </div> </div> <div class="prompt-footer"> <p id="prompt-validation-note" class="validation-note"> Required variables: <code>{objective}</code>, <code>{history}</code>, <code>{system_info}</code><br> Required keywords: <code>COMMAND:</code>, <code>REPORT:</code> </p> <div class="footer-controls"> <span id="prompt-validation-status" style="color: #aaa; font-size: 14px;"></span> <button id="save-prompts-btn">Save Templates</button> </div> </div> </div>
     <div id="summarization-prompt-modal-overlay" class="modal-overlay"></div>
     <div id="summarization-prompt-modal" class="modal-content" style="height: 85vh;">
         <span class="modal-close-btn" data-modal-id="summarization-prompt">&times;</span>
@@ -361,6 +421,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const maxSteps = document.getElementById('max-steps');
     const summarizationThreshold = document.getElementById('summarization-threshold');
     const llmTimeout = document.getElementById('llm-timeout');
+    const chatHistoryCount = document.getElementById('chat-history-count');
     const saveAgentBtn = document.getElementById('save-agent-btn');
     const fetchModelsBtn = document.getElementById('fetch-models-btn');
     const agentSummary = document.getElementById('agent-summary');
@@ -380,6 +441,7 @@ document.addEventListener('DOMContentLoaded', () => {
             maxSteps.value = data.max_steps;
             summarizationThreshold.value = data.summarization_threshold;
             llmTimeout.value = data.llm_timeout || 120;
+            chatHistoryCount.value = data.chat_history_message_count || 20;
             updateProviderUI();
             if (data.model_name) {
                 modelSelect.value = data.model_name;
@@ -527,7 +589,8 @@ document.addEventListener('DOMContentLoaded', () => {
             ollama_api_url: ollamaUrl.value,
             max_steps: parseInt(maxSteps.value),
             summarization_threshold: parseInt(summarizationThreshold.value),
-            llm_timeout: parseInt(llmTimeout.value)
+            llm_timeout: parseInt(llmTimeout.value),
+            chat_history_message_count: parseInt(chatHistoryCount.value)
         };
         
         fetch('/save_agent_config', {
@@ -694,58 +757,103 @@ document.addEventListener('DOMContentLoaded', () => {
     // Prompt editor logic
     const standardModeBtn = document.getElementById('standard-mode-btn');
     const askModeBtn = document.getElementById('ask-mode-btn');
+    const chatModeBtn = document.getElementById('chat-mode-btn');
+
+    const executionPromptsContainer = document.getElementById('execution-prompts-container');
+    const chatPromptContainer = document.getElementById('chat-prompt-container');
+
     const ollamaPromptTextarea = document.getElementById('ollama-prompt-textarea');
     const cloudPromptTextarea = document.getElementById('cloud-prompt-textarea');
+    const chatPromptTextarea = document.getElementById('chat-prompt-textarea');
+
     const savePromptsBtn = document.getElementById('save-prompts-btn');
     const promptValidationStatus = document.getElementById('prompt-validation-status');
+    const promptValidationNote = document.getElementById('prompt-validation-note');
     let currentPromptMode = 'standard';
 
-    promptEditorTrigger.addEventListener('click', function() {
-        currentPromptMode = 'standard';
-        standardModeBtn.style.backgroundColor = '#0e639c';
+    function setPromptModeUI(mode) {
+        currentPromptMode = mode;
+
+        // Reset buttons
+        standardModeBtn.style.backgroundColor = '#5c5c5c';
         askModeBtn.style.backgroundColor = '#5c5c5c';
+        chatModeBtn.style.backgroundColor = '#5c5c5c';
+
+        // Set Active
+        if(mode === 'standard') standardModeBtn.style.backgroundColor = '#0e639c';
+        if(mode === 'ask') askModeBtn.style.backgroundColor = '#0e639c';
+        if(mode === 'chat') chatModeBtn.style.backgroundColor = '#0e639c';
+
+        // Toggle Containers & Notes
+        if (mode === 'chat') {
+            executionPromptsContainer.style.display = 'none';
+            chatPromptContainer.style.display = 'flex';
+            promptValidationNote.innerHTML = 'Required variable: <code>{user_message}</code><br>Optional: <code>{history}</code>, <code>{objective}</code>, <code>{system_info}</code>';
+        } else {
+            executionPromptsContainer.style.display = 'flex';
+            chatPromptContainer.style.display = 'none';
+            let keywords = '<code>COMMAND:</code>, <code>REPORT:</code>';
+            if (mode === 'ask') keywords += ', <code>ASK:</code>';
+            promptValidationNote.innerHTML = `Required variables: <code>{objective}</code>, <code>{history}</code>, <code>{system_info}</code><br>Required keywords: ${keywords}`;
+        }
+    }
+
+    promptEditorTrigger.addEventListener('click', function() {
+        setPromptModeUI('standard');
         loadPrompts('standard');
         openModal('prompt-editor');
     });
 
     standardModeBtn.addEventListener('click', function() {
-        currentPromptMode = 'standard';
-        this.style.backgroundColor = '#0e639c';
-        askModeBtn.style.backgroundColor = '#5c5c5c';
+        setPromptModeUI('standard');
         loadPrompts('standard');
     });
 
     askModeBtn.addEventListener('click', function() {
-        currentPromptMode = 'ask';
-        this.style.backgroundColor = '#0e639c';
-        standardModeBtn.style.backgroundColor = '#5c5c5c';
+        setPromptModeUI('ask');
         loadPrompts('ask');
+    });
+
+    chatModeBtn.addEventListener('click', function() {
+        setPromptModeUI('chat');
+        loadPrompts('chat');
     });
 
     function loadPrompts(mode) {
         fetch(`/get_prompts?mode=${mode}`).then(res => res.json()).then(data => {
-            ollamaPromptTextarea.value = data.ollama_prompt || '';
-            cloudPromptTextarea.value = data.cloud_prompt || '';
+            if (mode === 'chat') {
+                chatPromptTextarea.value = data.chat_prompt || '';
+            } else {
+                ollamaPromptTextarea.value = data.ollama_prompt || '';
+                cloudPromptTextarea.value = data.cloud_prompt || '';
+            }
         });
     }
 
     savePromptsBtn.addEventListener('click', function() {
-        promptValidationStatus.textContent = 'Validating...';
+        promptValidationStatus.textContent = 'Saving...';
+
+        const payload = new URLSearchParams();
+        payload.append('mode', currentPromptMode);
+
+        if (currentPromptMode === 'chat') {
+            payload.append('chat_prompt', chatPromptTextarea.value);
+        } else {
+            payload.append('ollama_prompt', ollamaPromptTextarea.value);
+            payload.append('cloud_prompt', cloudPromptTextarea.value);
+        }
+
         fetch('/save_prompts', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: new URLSearchParams({
-                mode: currentPromptMode,
-                ollama_prompt: ollamaPromptTextarea.value,
-                cloud_prompt: cloudPromptTextarea.value
-            })
+            body: payload
         }).then(res => res.json()).then(data => {
             if (data.status === 'success') {
-                promptValidationStatus.textContent = '✓ Saved successfully';
+                promptValidationStatus.textContent = '✓ Saved';
                 setTimeout(() => {
                     promptValidationStatus.textContent = '';
                     closeModal('prompt-editor');
-                }, 1500);
+                }, 1000);
             } else {
                 promptValidationStatus.textContent = `✗ ${data.message}`;
             }
