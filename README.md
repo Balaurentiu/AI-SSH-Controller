@@ -138,11 +138,7 @@ All configuration is done through the **web interface** - no need to manually ed
    - Configure SSH key path ... enter the password for automatic deploy and press Deploy
    - Click **Save & Test Connection** to apply and verify connectivity
 
-   **Optional - Advanced Settings:**
-   - **Prompt Editor**: Customize agent instruction templates
-   - **Validator Prompt**: Modify command validation rules
-   - **Summarization Prompt**: Adjust history compression behavior
-
+   
 ### SSH Key Setup
 
 The application handles SSH key generation and deployment automatically:
