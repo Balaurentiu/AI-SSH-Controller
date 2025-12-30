@@ -127,7 +127,7 @@ All configuration is done through the **web interface** - no need to manually ed
    - Select LLM Provider (Ollama, Gemini, or Anthropic)
    - Enter API Key (for Gemini/Anthropic)
    - Click **Fetch Models** to load available models from your provider
-   - Choose model from dropdown (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`)
+   - Choose model from dropdown (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`, `The best for local Ollama is gpt-oss:20b`)
    - Set max steps, timeouts, and summarization threshold
    - Click **Save Agent Config** to apply
 
