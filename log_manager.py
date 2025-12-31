@@ -847,3 +847,21 @@ class UnifiedLogManager:
     def clear_action_plan(self):
         """Clear the active action plan."""
         self.action_plan.clear_plan()
+
+    def reload_state(self):
+        """
+        Critical for Load Session: Forces the manager to re-read JSON files
+        from disk into memory lists.
+        """
+        print("UnifiedLogManager: Reloading internal state from disk...")
+        # Reload Chat History
+        self.chat_log.history = self.chat_log.load_history()
+
+        # Reload Action Plan (Plan is stateless in memory, always reads file,
+        # but good to ensure no cached data if we add caching later)
+        pass
+
+        # Reset internal pointers for Execution Log if needed
+        self.base_log.current_step = 0  # Or try to calculate from log content
+
+        print("UnifiedLogManager: State reload complete.")

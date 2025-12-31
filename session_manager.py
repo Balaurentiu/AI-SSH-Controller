@@ -1,7 +1,15 @@
 import os
 import json
 import traceback
-from config import KEYS_DIR, SESSION_FILE_PATH, CONNECTIONS_FILE_PATH, EXECUTION_LOG_FILE_PATH
+import zipfile
+from datetime import datetime
+from typing import Dict, List, Optional
+
+from config import (
+    APP_DIR, KEYS_DIR, SESSION_FILE_PATH, CONNECTIONS_FILE_PATH,
+    EXECUTION_LOG_FILE_PATH, CHAT_LOG_FILE_PATH, ACTION_PLAN_FILE_PATH,
+    CONFIG_FILE_PATH, EXECUTION_LOG_LLM_CONTEXT_PATH
+)
 from log_manager import UnifiedLogManager
 
 # ---
@@ -201,4 +209,103 @@ def migrate_session_to_new_logs():
         traceback.print_exc()
         print("Starting with fresh log system.")
         return UnifiedLogManager()
+
+def save_session_state(global_state):
+    """
+    Saves the full application state to a ZIP file.
+    Dumps in-memory GLOBAL_STATE to session.json first.
+    """
+    try:
+        # 1. Dump in-memory state to session.json
+        with open(SESSION_FILE_PATH, 'w') as f:
+            json.dump(global_state, f, indent=4, default=str)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_filename = f"session_{timestamp}.zip"
+        zip_path = os.path.join(APP_DIR, zip_filename)
+
+        with zipfile.ZipFile(zip_path, 'w') as zipf:
+            # Core State
+            zipf.write(SESSION_FILE_PATH, arcname='session.json')
+
+            # Config
+            if os.path.exists(CONFIG_FILE_PATH):
+                zipf.write(CONFIG_FILE_PATH, arcname='config.ini')
+
+            # SSH Connections
+            if os.path.exists(CONNECTIONS_FILE_PATH):
+                zipf.write(CONNECTIONS_FILE_PATH, arcname='connections.json')
+
+            # Logs & History
+            if os.path.exists(EXECUTION_LOG_FILE_PATH):
+                zipf.write(EXECUTION_LOG_FILE_PATH, arcname='execution_log.txt')
+
+            if os.path.exists(EXECUTION_LOG_LLM_CONTEXT_PATH):
+                zipf.write(EXECUTION_LOG_LLM_CONTEXT_PATH, arcname='execution_log_llm_context.txt')
+
+            if os.path.exists(CHAT_LOG_FILE_PATH):
+                zipf.write(CHAT_LOG_FILE_PATH, arcname='chat_history.json')
+
+            if os.path.exists(ACTION_PLAN_FILE_PATH):
+                zipf.write(ACTION_PLAN_FILE_PATH, arcname='action_plan.json')
+
+        print(f"Session saved to {zip_path}")
+        return zip_path
+
+    except Exception as e:
+        print(f"Error saving session: {e}")
+        traceback.print_exc()
+        return None
+
+def load_session_state(zip_path):
+    """
+    Restores files from ZIP to disk and returns the loaded session.json data.
+    """
+    try:
+        print(f"Loading session from {zip_path}...")
+
+        with zipfile.ZipFile(zip_path, 'r') as zipf:
+            # Extract session.json
+            if 'session.json' in zipf.namelist():
+                zipf.extract('session.json', APP_DIR)
+
+            # Extract Config (to keys/config.ini)
+            if 'config.ini' in zipf.namelist():
+                with open(CONFIG_FILE_PATH, 'wb') as f:
+                    f.write(zipf.read('config.ini'))
+
+            # Extract Connections
+            if 'connections.json' in zipf.namelist():
+                with open(CONNECTIONS_FILE_PATH, 'wb') as f:
+                    f.write(zipf.read('connections.json'))
+
+            # Extract Logs
+            if 'execution_log.txt' in zipf.namelist():
+                with open(EXECUTION_LOG_FILE_PATH, 'wb') as f:
+                    f.write(zipf.read('execution_log.txt'))
+
+            if 'execution_log_llm_context.txt' in zipf.namelist():
+                with open(EXECUTION_LOG_LLM_CONTEXT_PATH, 'wb') as f:
+                    f.write(zipf.read('execution_log_llm_context.txt'))
+
+            # Extract Chat & Plan
+            if 'chat_history.json' in zipf.namelist():
+                with open(CHAT_LOG_FILE_PATH, 'wb') as f:
+                    f.write(zipf.read('chat_history.json'))
+
+            if 'action_plan.json' in zipf.namelist():
+                with open(ACTION_PLAN_FILE_PATH, 'wb') as f:
+                    f.write(zipf.read('action_plan.json'))
+
+        # Read the state back into memory to return it
+        with open(SESSION_FILE_PATH, 'r') as f:
+            state = json.load(f)
+
+        print("Session files restored successfully.")
+        return state
+
+    except Exception as e:
+        print(f"Error loading session: {e}")
+        traceback.print_exc()
+        return None
 
