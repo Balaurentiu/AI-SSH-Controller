@@ -63,6 +63,7 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 
 **agent_core.py** - Autonomous agent logic
 - `agent_task_runner()` - Main execution loop running in eventlet greenthread
+- `process_chat_message()` - Handles chat interactions with recursive search support
 - Command generation via LLM with retry logic
 - Supports multiple action types: COMMAND, SRCH, WRITE_FILE, ASK, TIMEOUT, REPORT
 - Command validation (Independent mode uses LLM validator, Assisted mode requires user approval)
@@ -70,6 +71,8 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 - Step output summarization when command output exceeds 30% of summarization threshold (cloud providers only)
 - Execution modes: Independent (auto-validate), Assisted (user approval), with optional ASK capability
 - LangChain integration for search result and step output summarization (cloud providers)
+- **NEW**: Explicit action plan step completion via `<<MARK_STEP_COMPLETED: X>>` tags in chat
+- **NEW**: Automatic completion prompt injection for chat-initiated searches
 
 **ssh_utils.py** - SSH operations
 - `execute_ssh_command()` - Executes commands on remote system via paramiko
@@ -100,11 +103,16 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 - Progressive LLM nudging: 5 retry attempts with escalating pressure on empty responses
 - Smart retry system: Injects "SYSTEM ERROR" warnings to force LLM response
 
-**log_manager.py** - Unified logging architecture (NEW)
+**log_manager.py** - Unified logging architecture
 - `BaseLogManager` - Manages immutable full log in `execution_log.txt` (append-only)
 - `ViewGenerator` - Creates different log views (Actions, Commands, VM Screen) from full log
 - `AgentMemoryManager` - Manages LLM working memory in `execution_log_llm_context.txt`
 - `UnifiedLogManager` - Facade providing unified interface for all logging operations
+- `ActionPlanManager` - Manages multi-step action plans with stack structure
+  - **NEW**: `mark_step_by_index(step_index)` - Explicit step completion by 1-based index (reliable)
+  - `mark_step_completed(step_objective)` - Legacy fuzzy matching method (less reliable)
+  - `get_plan_status()` - Returns formatted plan status for LLM prompt injection
+  - `set_plan(title, steps)` - Creates new plan and pushes to stack
 - `search_past_context()` - Enables agent to search execution history (SRCH capability)
 - Performance optimizations: view truncation for large logs (5000 lines max)
 
@@ -115,11 +123,24 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 - Command timeout control with live update button
 - Execution countdown display
 - SocketIO event handlers for agent communication
+- **Action Plan UI** (NEW):
+  - Edit mode with view/edit state management (`isPlanEditMode` flag)
+  - `renderPlanViewMode()` - Display read-only plan with progress
+  - `renderPlanEditMode()` - Editable plan with add/delete/save functionality
+  - Fullscreen toggle for better editing experience
+  - Create-from-zero functionality (plan accessible even when none exists)
+  - Locked completed steps (read-only, cannot delete)
+  - Auto-refresh protection during editing (prevents interference)
 
 **templates/layout.html** - Shared layout and modals
 - Settings modals (Agent Config, System Config, Prompt Editor, Validator Prompt)
 - Connection management (saved SSH connections)
 - Manual summarization trigger
+- **Action Plan Modal** (NEW):
+  - Fullscreen button with proper positioning (⛶ icon)
+  - Edit mode buttons (Edit Plan, Add Step, Save Changes, Clear Plan)
+  - Responsive sizing (fixed delete buttons at 70px, flexible text inputs)
+  - Overflow control to prevent horizontal scroll bars
 
 **templates/history.html** - Agent persistent memory viewer
 
@@ -167,16 +188,18 @@ The agent can perform multiple actions each step:
 
 **Prompt System:**
 - Multiple prompt templates stored in config.ini sections:
+  - **ChatPrompt** - Chat interface interactions (NEW - includes action plan completion instructions)
   - OllamaPrompt / CloudPrompt (standard - includes SRCH capability)
   - OllamaPromptWithAsk / CloudPromptWithAsk (with ASK capability)
   - OllamaValidatePrompt / CloudValidatePrompt (command validation)
   - OllamaSummarizePrompt / CloudSummarizePrompt (history compression)
-  - OllamaStepSummaryPrompt / CloudStepSummaryPrompt (step output summarization - NEW)
-  - OllamaSearchSummaryPrompt / CloudSearchSummaryPrompt (search results summarization - NEW)
+  - OllamaStepSummaryPrompt / CloudStepSummaryPrompt (step output summarization)
+  - OllamaSearchSummaryPrompt / CloudSearchSummaryPrompt (search results summarization)
 - Note: CloudPrompt applies to both Gemini and Anthropic providers
 - Legacy note: config.ini.new template contains GeminiPrompt sections for backwards compatibility, but the code uses CloudPrompt for both Gemini and Anthropic
-- Variables available: `{objective}`, `{history}`, `{system_info}`, `{command}`, `{sudo_available}`, `{reason}`, `{summarization_threshold}`, `{command_timeout}`, `{output}`, `{results}`
+- Variables available: `{objective}`, `{history}`, `{system_info}`, `{command}`, `{sudo_available}`, `{reason}`, `{summarization_threshold}`, `{command_timeout}`, `{output}`, `{results}`, `{action_plan_status}`, `{chat_history}`, `{user_message}`
 - All prompts include SRCH documentation to enable history search capability
+- **ChatPrompt includes explicit action plan completion instructions** (section 6)
 
 **Logging Architecture & Dual-Memory System:**
 
@@ -212,6 +235,35 @@ The system maintains two separate memory stores:
 - Results are summarized via LangChain when using cloud providers
 - Search results added to LLM context for current step
 - Enables agent to recall information from earlier in session (even if summarized out)
+- **NEW**: Chat-initiated searches automatically inject completion prompt
+  - After search completes, `user_message` is modified to: "Search completed. The results have been added to the execution history. Please analyze the search results and provide relevant findings to the user."
+  - Ensures LLM responds with analysis instead of just having results in context
+
+**Action Plan Management:**
+- **Explicit Tag-Based Completion** (NEW - Recommended):
+  - LLM generates `<<MARK_STEP_COMPLETED: X>>` tag in chat responses
+  - Detected by `agent_core.py:process_chat_message()` (line ~1684)
+  - Calls `ActionPlanManager.mark_step_by_index(step_number)` for reliable completion
+  - Tag removed from displayed message automatically
+  - UI updates immediately via SocketIO event
+  - **This is the PRIMARY method for marking steps** - more reliable than fuzzy matching
+
+- **Legacy Fuzzy Matching** (Fallback):
+  - `ActionPlanManager.mark_step_completed(step_objective)` matches by text similarity
+  - Uses token matching with 50% threshold
+  - Less reliable, can mark wrong steps
+  - Still present for backwards compatibility
+
+- **Chat Prompt Instructions**:
+  - ChatPrompt section 6 teaches LLM when/how to use `<<MARK_STEP_COMPLETED: X>>`
+  - Rules: Only mark ONE step at a time, only when task confirmed complete
+  - LLM should immediately propose next step after marking one complete
+
+- **Plan Stack Structure**:
+  - Plans stored as JSON array/stack in `action_plan.json`
+  - Supports nested sub-plans (push/pop operations)
+  - Active plan is always top of stack (`stack[-1]`)
+  - Each step has: `objective` (string), `completed` (boolean)
 
 ## Critical Implementation Details
 
@@ -227,16 +279,22 @@ The system maintains two separate memory stores:
 
 **LLM Response Parsing:**
 - Expected format: `REASON: [text]\n[ACTION]`
-- Supported actions:
+- Supported actions in task execution:
   - `COMMAND: [command]` - Execute SSH command
   - `SRCH: [query]` - Search execution history
   - `WRITE_FILE: [path]\nCONTENT:\n[content]\nEND_CONTENT` - Create file
   - `ASK: [question]` - Request human input (if enabled)
   - `REPORT: [final report]` - Complete task
   - `TIMEOUT: [seconds]` - Adjust timeout (can combine with other actions)
+- Supported tags in chat responses:
+  - `<<MARK_STEP_COMPLETED: X>>` - Mark action plan step X as completed (NEW)
+  - `<<REQUEST_TASK: [objective]>>` - Propose a new task to execute
+  - `<<ACTION_PLAN_START>>...<plan>...<<ACTION_PLAN_STOP>>` - Create multi-step plan
+  - `SRCH: [query]` - Search history (triggers recursive loop with completion prompt)
 - Validator format: `APPROVE` or `REJECT REASON: [reason]`
 - Parser in `agent_core.py` handles whitespace variations and retries on invalid format
 - SRCH results are summarized using LangChain when using cloud providers (Gemini/Anthropic)
+- All special tags are automatically removed from displayed messages to keep UI clean
 
 **History Summarization:**
 - Triggered when LLM context (execution_log_llm_context.txt) exceeds threshold (default 15000 chars)
@@ -272,12 +330,16 @@ The system maintains two separate memory stores:
 
 **config.ini sections:**
 - `[General]` - provider (ollama/gemini/anthropic), gemini_api_key, anthropic_api_key
-- `[Agent]` - model_name, max_steps, summarization_threshold, command_timeout, llm_timeout
+- `[Agent]` - model_name, max_steps, summarization_threshold, command_timeout, llm_timeout, chat_history_message_count
 - `[System]` - ip_address, username, ssh_port, ssh_key_path
 - `[Ollama]` - api_url
-- `[OllamaPrompt]`, `[CloudPrompt]`, `[OllamaValidatePrompt]`, `[CloudValidatePrompt]`, etc. - Prompt templates
-- `[OllamaStepSummaryPrompt]`, `[CloudStepSummaryPrompt]` - Step output summarization prompts (NEW)
-- `[OllamaSearchSummaryPrompt]`, `[CloudSearchSummaryPrompt]` - Search results summarization prompts (NEW)
+- `[ChatPrompt]` - Chat interface prompt (includes action plan completion instructions - section 6)
+- `[OllamaPrompt]`, `[CloudPrompt]` - Task execution prompts
+- `[OllamaPromptWithAsk]`, `[CloudPromptWithAsk]` - With ASK capability enabled
+- `[OllamaValidatePrompt]`, `[CloudValidatePrompt]` - Command validation prompts
+- `[OllamaSummarizePrompt]`, `[CloudSummarizePrompt]` - History compression prompts
+- `[OllamaStepSummaryPrompt]`, `[CloudStepSummaryPrompt]` - Step output summarization prompts
+- `[OllamaSearchSummaryPrompt]`, `[CloudSearchSummaryPrompt]` - Search results summarization prompts
 - Note: Legacy `[GeminiPrompt]` sections exist in config.ini.new template for backwards compatibility, but code uses `[CloudPrompt]`
 
 **Persistent files:**
@@ -286,7 +348,9 @@ The system maintains two separate memory stores:
 - `/app/keys/config.ini` - Application configuration (moved from /app for persistence)
 - `/app/keys/connections.json` - Saved SSH connection history
 - `/app/keys/execution_log.txt` - Full immutable log (managed by BaseLogManager, append-only)
-- `/app/keys/execution_log_llm_context.txt` - Agent working memory / LLM context (NEW)
+- `/app/keys/execution_log_llm_context.txt` - Agent working memory / LLM context
+- `/app/keys/chat_history.json` - Persistent chat conversation history
+- `/app/keys/action_plan.json` - Active action plan stack (array of plans)
 - `/app/session.json` - Agent persistent memory (history, system info)
 - `/app/logs/base_log.jsonl` - Structured log in JSONL format (optional)
 - `/app/logs/agent_memory.json` - Agent memory snapshot (optional)
@@ -350,5 +414,32 @@ No automated tests present. Manual testing workflow:
 **WRITE_FILE not working:**
 - Check file was created on remote system
 - Verify file content logged to Full Log (search for "FILE CONTENT WRITTEN")
-- If special characters in content, check heredoc escaping in SSH command
+- If special characters in content, check Base64 encoding is working
 - Windows vs Linux path differences (use forward slashes where possible)
+
+**Action Plan steps not marking as completed:**
+- **Primary method** (Recommended): LLM should use `<<MARK_STEP_COMPLETED: X>>` tag in chat
+  - Check if tag is present in LLM response (look for the tag in logs)
+  - Verify `agent_core.py:process_chat_message()` detects the tag (~line 1684)
+  - Check `ActionPlanManager.mark_step_by_index()` is being called
+  - Ensure UI receives SocketIO event `action_plan_data` after marking
+- **Legacy method** (Fallback): Fuzzy text matching
+  - Task objective must match step text with >50% token overlap
+  - This method is unreliable - use explicit tags instead
+- **ChatPrompt section 6** teaches LLM when to use the tag - verify it's present in config.ini
+- **Check the plan exists**: View action_plan.json to verify plan structure
+
+**Action Plan UI issues:**
+- **Edit mode getting reset**: Auto-refresh protection should prevent this
+  - Check `isPlanEditMode` flag is being respected in `socket.on('action_plan_data')`
+  - Check setInterval also respects the flag (~line 1211-1218 in index.html)
+- **Modal positioning off-screen in fullscreen**:
+  - Verify `modal.style.transform = 'none'` is set when entering fullscreen
+  - Check fullscreen toggle function (`togglePlanFullscreen()`)
+- **Horizontal scroll bars appearing**:
+  - Ensure `overflow-x: hidden` on modal and content containers
+  - Verify `box-sizing: border-box` on all input fields
+  - Check delete buttons have fixed width (70px max-width)
+- **Save fails with AttributeError**:
+  - Modern version uses `_save_stack()` method, not `_save_plan()`
+  - Check app.py `/update_action_plan` endpoint uses correct method
