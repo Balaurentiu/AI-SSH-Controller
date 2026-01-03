@@ -20,7 +20,8 @@ from eventlet.event import Event
 # --- Importurile Noilor Module Refactorizate ---
 from config import (
     get_config, KEYS_DIR, CONFIG_FILE_PATH,
-    SESSION_FILE_PATH, CONNECTIONS_FILE_PATH, EXECUTION_LOG_FILE_PATH
+    SESSION_FILE_PATH, CONNECTIONS_FILE_PATH, EXECUTION_LOG_FILE_PATH,
+    APP_DIR
 )
 import ssh_utils
 import llm_utils
@@ -785,31 +786,27 @@ def add_search_to_context():
 @app.route('/save_session')
 def save_session():
     """
-    Save current session as a ZIP containing only the essential configuration
-    and the immutable execution log. This allows for perfect restoration.
+    Save current session as a ZIP containing ALL persistence files.
     """
     try:
-        # Force flush any pending writes to disk before zipping
-        save_app_state()
+        # Use the updated session_manager function which saves GLOBAL_STATE + all files
+        zip_path = session_manager.save_session_state(GLOBAL_STATE)
 
-        zip_buffer = BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-            # 1. Save Config (Settings)
-            if os.path.exists(CONFIG_FILE_PATH):
-                zf.write(CONFIG_FILE_PATH, 'config.ini')
+        if not zip_path or not os.path.exists(zip_path):
+            return jsonify({'status': 'error', 'message': 'Failed to create session ZIP'}), 500
 
-            # 2. Save Full Log (The Source of Truth)
-            if os.path.exists(EXECUTION_LOG_FILE_PATH):
-                zf.write(EXECUTION_LOG_FILE_PATH, 'execution_log.txt')
+        # Read the ZIP file into memory for download
+        with open(zip_path, 'rb') as f:
+            zip_data = f.read()
 
-            # 3. Save Connections (History)
-            if os.path.exists(CONNECTIONS_FILE_PATH):
-                zf.write(CONNECTIONS_FILE_PATH, 'connections.json')
+        # Cleanup the temporary file
+        os.remove(zip_path)
 
+        # Create BytesIO buffer for send_file
+        zip_buffer = BytesIO(zip_data)
         zip_buffer.seek(0)
 
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'ai_agent_session_{timestamp}.zip'
+        filename = os.path.basename(zip_path)
 
         return send_file(
             zip_buffer,
@@ -825,88 +822,59 @@ def save_session():
 
 @app.route('/load_session', methods=['POST'])
 def load_session():
-    """
-    Load a session from ZIP.
-    Strategy: Restore files to disk, then ask LogManager to re-parse everything
-    to reconstruct the agent's memory state (RAM).
-    """
-    try:
-        if 'file' not in request.files:
-            return jsonify({'status': 'error', 'message': 'No file provided'}), 400
+    if 'file' not in request.files:
+        return jsonify({'status': 'error', 'message': 'No file uploaded'})
 
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'status': 'error', 'message': 'No file selected'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'status': 'error', 'message': 'No file selected'})
 
-        # 1. Extract files to disk (Overwriting current state)
-        with zipfile.ZipFile(file, 'r') as zf:
-            # Config
-            if 'config.ini' in zf.namelist():
-                with zf.open('config.ini') as config_file:
-                    content = config_file.read().decode('utf-8')
-                    with open(CONFIG_FILE_PATH, 'w') as f:
-                        f.write(content)
+    if file:
+        try:
+            # Save uploaded zip temporarily
+            temp_path = os.path.join(APP_DIR, 'temp_restore.zip')
+            file.save(temp_path)
 
-            # Connections
-            if 'connections.json' in zf.namelist():
-                with zf.open('connections.json') as conn_file:
-                    content = conn_file.read().decode('utf-8')
-                    with open(CONNECTIONS_FILE_PATH, 'w') as f:
-                        f.write(content)
+            # 1. Restore Files to Disk
+            loaded_state_data = session_manager.load_session_state(temp_path)
 
-            # Execution Log - THE KEY RESTORATION POINT
-            if 'execution_log.txt' in zf.namelist():
-                with zf.open('execution_log.txt') as log_file:
-                    content = log_file.read().decode('utf-8')
-                    with open(EXECUTION_LOG_FILE_PATH, 'w', encoding='utf-8') as f:
-                        f.write(content)
+            # 2. Update RAM (GLOBAL_STATE)
+            if loaded_state_data:
+                global GLOBAL_STATE
 
-        # 2. Re-initialize Log System to pick up the new file
-        # This creates a new UnifiedLogManager reading the restored file
-        initialize_log_system()
-        log_manager = GLOBAL_STATE.get('log_manager')
+                # --- FIX: Protect log_manager from being overwritten by a string ---
+                # The JSON save converts objects to strings. We must NOT overwrite
+                # the live LogManager object with that string.
+                if 'log_manager' in loaded_state_data:
+                    del loaded_state_data['log_manager']
+                # -----------------------------------------------------------------
 
-        # 3. Rehydrate GLOBAL_STATE from the log file (RAM reconstruction)
-        if log_manager:
-            print("Rehydrating session state from restored log...")
+                GLOBAL_STATE.update(loaded_state_data)
+                print("Global State memory updated from session file.")
 
-            # Rebuild Full Log View
-            GLOBAL_STATE['last_session']['log'] = log_manager.get_full_log()
+                # 3. Update Log Manager RAM
+                # Ensure the object exists and is valid
+                if 'log_manager' not in GLOBAL_STATE or not hasattr(GLOBAL_STATE['log_manager'], 'reload_state'):
+                    print("Log Manager instance missing or invalid. Re-initializing...")
+                    initialize_log_system()
 
-            # Rebuild Agent Memory (Context)
-            GLOBAL_STATE['agent_history'] = log_manager.get_llm_context()
+                log_manager = GLOBAL_STATE.get('log_manager')
+                if log_manager:
+                    log_manager.reload_state()
 
-            # Rebuild VM Screen
-            GLOBAL_STATE['persistent_vm_output'] = log_manager.get_vm_screen_view()
+                # Cleanup
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
 
-            # Attempt to recover Objective and System Info from the log content
-            # (Simple regex parsing from the re-loaded log)
-            full_text = GLOBAL_STATE['last_session']['log']
+                return jsonify({'status': 'success'})
+            else:
+                return jsonify({'status': 'error', 'message': 'Failed to parse session data'})
 
-            obj_match = re.findall(r'Objective: (.*)', full_text)
-            if obj_match:
-                GLOBAL_STATE['current_objective'] = obj_match[-1].strip()
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({'status': 'error', 'message': str(e)})
 
-            sys_match = re.findall(r'System Info: (.*)', full_text)
-            if sys_match:
-                GLOBAL_STATE['system_os_info'] = sys_match[-1].strip()
-
-        # 4. Re-check Connections
-        initialize_ssh_status()
-        initialize_llm_status()
-
-        # Update UI immediately
-        socketio.emit('ssh_status_update', GLOBAL_STATE['ssh_connection_status'])
-        socketio.emit('llm_status_update', GLOBAL_STATE['llm_connection_status'])
-
-        print("Session loaded and state rehydrated successfully.")
-
-        return jsonify({'status': 'success', 'message': 'Session restored from log file!'})
-
-    except Exception as e:
-        print(f"Error loading session: {e}")
-        traceback.print_exc()
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    return jsonify({'status': 'error', 'message': 'Unknown error'})
 
 @app.route('/get_public_key')
 def get_public_key():
