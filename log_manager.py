@@ -603,6 +603,29 @@ class ActionPlanManager:
 
         return updated
 
+    def mark_step_by_index(self, step_index: int) -> bool:
+        """
+        Marks a specific step as completed based on its 1-based index.
+        This is more reliable than fuzzy matching and uses explicit LLM tags.
+        """
+        stack = self.load_stack()
+        if not stack:
+            return False
+
+        active_plan = stack[-1]
+
+        # Adjust for 0-based array (Step 1 is index 0)
+        array_index = step_index - 1
+
+        if 0 <= array_index < len(active_plan['steps']):
+            if not active_plan['steps'][array_index]['completed']:
+                active_plan['steps'][array_index]['completed'] = True
+                print(f"Action plan: Explicitly marked Step {step_index} as completed.")
+                self._save_stack(stack)
+                return True
+
+        return False
+
     def pop_finished_plans(self):
         """Helper to remove finished plans from top of stack (called before getting status or setting new ones)."""
         stack = self.load_stack()

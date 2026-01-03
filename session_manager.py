@@ -1,7 +1,13 @@
 import os
 import json
 import traceback
-from config import KEYS_DIR, SESSION_FILE_PATH, CONNECTIONS_FILE_PATH, EXECUTION_LOG_FILE_PATH
+import zipfile
+from datetime import datetime
+from config import (
+    KEYS_DIR, SESSION_FILE_PATH, CONNECTIONS_FILE_PATH,
+    EXECUTION_LOG_FILE_PATH, CHAT_LOG_FILE_PATH, ACTION_PLAN_FILE_PATH,
+    APP_DIR
+)
 from log_manager import UnifiedLogManager
 
 # ---
@@ -201,4 +207,97 @@ def migrate_session_to_new_logs():
         traceback.print_exc()
         print("Starting with fresh log system.")
         return UnifiedLogManager()
+
+def save_session_state():
+    """
+    Creates a ZIP archive containing all session persistence files:
+    - session.json
+    - connections.json
+    - execution_log.txt
+    - chat_history.json
+    - action_plan.json
+
+    Returns the path to the created ZIP file, or None on error.
+    """
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_filename = f"session_backup_{timestamp}.zip"
+        zip_path = os.path.join(APP_DIR, zip_filename)
+
+        files_to_backup = [
+            (SESSION_FILE_PATH, "session.json"),
+            (CONNECTIONS_FILE_PATH, "connections.json"),
+            (EXECUTION_LOG_FILE_PATH, "execution_log.txt"),
+            (CHAT_LOG_FILE_PATH, "chat_history.json"),
+            (ACTION_PLAN_FILE_PATH, "action_plan.json")
+        ]
+
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file_path, archive_name in files_to_backup:
+                if os.path.exists(file_path):
+                    zipf.write(file_path, archive_name)
+                    print(f"Added {archive_name} to backup archive")
+                else:
+                    print(f"Warning: {archive_name} not found, skipping")
+
+        print(f"Session state saved to: {zip_path}")
+        return zip_path
+
+    except Exception as e:
+        print(f"Error saving session state: {e}")
+        traceback.print_exc()
+        return None
+
+def load_session_state(zip_path):
+    """
+    Extracts session persistence files from a ZIP archive and restores them
+    to their correct locations in the keys/ directory.
+
+    Args:
+        zip_path: Path to the ZIP archive containing session files
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        if not os.path.exists(zip_path):
+            print(f"Error: ZIP file not found: {zip_path}")
+            return False
+
+        file_mappings = {
+            "session.json": SESSION_FILE_PATH,
+            "connections.json": CONNECTIONS_FILE_PATH,
+            "execution_log.txt": EXECUTION_LOG_FILE_PATH,
+            "chat_history.json": CHAT_LOG_FILE_PATH,
+            "action_plan.json": ACTION_PLAN_FILE_PATH
+        }
+
+        with zipfile.ZipFile(zip_path, 'r') as zipf:
+            for archive_name, target_path in file_mappings.items():
+                if archive_name in zipf.namelist():
+                    # Extract to target location
+                    zipf.extract(archive_name, APP_DIR)
+                    extracted_path = os.path.join(APP_DIR, archive_name)
+
+                    # Move to correct location if needed
+                    if extracted_path != target_path:
+                        # Ensure target directory exists
+                        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+
+                        # Move file to target location
+                        if os.path.exists(target_path):
+                            os.remove(target_path)
+                        os.rename(extracted_path, target_path)
+
+                    print(f"Restored {archive_name} to {target_path}")
+                else:
+                    print(f"Warning: {archive_name} not found in archive")
+
+        print(f"Session state restored from: {zip_path}")
+        return True
+
+    except Exception as e:
+        print(f"Error loading session state: {e}")
+        traceback.print_exc()
+        return False
 

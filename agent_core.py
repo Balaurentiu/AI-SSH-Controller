@@ -1623,6 +1623,9 @@ def process_chat_message(socketio, global_state, user_message):
                     # Sync global state
                     global_state['agent_history'] = log_manager.get_llm_context()
 
+                # Modify user_message to include directive for LLM to analyze results
+                user_message = "Search completed. The results have been added to the execution history. Please analyze the search results and provide relevant findings to the user."
+
                 # Continue loop -> Re-prompt LLM with updated context containing search results
                 continue
 
@@ -1677,7 +1680,34 @@ def process_chat_message(socketio, global_state, user_message):
                 if not response_text:
                     response_text = f"I've created an action plan with {len(steps)} steps. Let's start with Step 1."
 
-            # 6. Check for Task Requests (<<REQUEST_TASK>>)
+            # 6. Check for Explicit Step Completion Tag (<<MARK_STEP_COMPLETED: X>>)
+            step_mark_match = re.search(r'<<MARK_STEP_COMPLETED:\s*(\d+)>>', response_text, re.IGNORECASE)
+
+            if step_mark_match:
+                try:
+                    step_number = int(step_mark_match.group(1))
+                    if log_manager:
+                        updated = log_manager.action_plan.mark_step_by_index(step_number)
+                        if updated:
+                            # Emit update to UI immediately
+                            plan_data = log_manager.action_plan.get_active_plan()
+                            if plan_data:
+                                socketio.emit('action_plan_data', {
+                                    'exists': True,
+                                    'title': plan_data.get('title', 'Action Plan'),
+                                    'steps': plan_data['steps'],
+                                    'total_steps': len(plan_data['steps']),
+                                    'completed_steps': sum(1 for s in plan_data['steps'] if s.get('completed', False)),
+                                    'next_step_index': next((i+1 for i, s in enumerate(plan_data['steps']) if not s.get('completed', False)), None),
+                                    'created_at': plan_data.get('created_at', '')
+                                })
+                except Exception as e:
+                    print(f"Error marking step completed: {e}")
+
+                # Remove the tag from the message shown to the user
+                response_text = response_text.replace(step_mark_match.group(0), "").strip()
+
+            # 7. Check for Task Requests (<<REQUEST_TASK>>)
             # Improved regex to handle variants like:
             # <<REQUEST_TASK: Objective>>  (Standard)
             # <<REQUEST_TASK>>: Objective  (Common LLM hallucination)
@@ -1708,7 +1738,7 @@ def process_chat_message(socketio, global_state, user_message):
 
                 socketio.emit('chat_task_proposal', {'objective': new_task_objective})
 
-            # 7. Final Response (No SRCH found, loop ends)
+            # 8. Final Response (No SRCH found, loop ends)
             socketio.emit('chat_response', {'role': 'assistant', 'content': final_content})
 
             if log_manager:

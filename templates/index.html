@@ -855,14 +855,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const actionPlanOverlay = document.getElementById('action-plan-modal-overlay');
     const actionPlanContent = document.getElementById('action-plan-content');
 
+    // Edit mode state
+    let isPlanEditMode = false;
+    let currentPlanData = null;
+
     // Function to update action plan status button
     function updateActionPlanButton(planData) {
+        // Always show button so user can create plan from zero
+        actionPlanBtn.style.display = 'block';
+
         if (!planData || !planData.exists) {
-            actionPlanBtn.style.display = 'none';
+            actionPlanBtn.textContent = 'Action Plan (None)';
+            actionPlanBtn.style.borderColor = '#666';
+            actionPlanBtn.style.color = '#666';
             return;
         }
-
-        actionPlanBtn.style.display = 'block';
 
         // Update button text with current progress
         if (planData.next_step_index) {
@@ -878,13 +885,42 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Function to format and display action plan in modal
     function displayActionPlan(planData) {
+        currentPlanData = planData;
+
         if (!planData || !planData.exists) {
-            actionPlanContent.innerHTML = '<p style="color: #666; text-align: center;">No active action plan</p>';
+            // Show create new plan option
+            actionPlanContent.innerHTML = `
+                <div style="text-align: center; padding: 40px;">
+                    <p style="color: #999; font-size: 1.2em; margin-bottom: 20px;">
+                        No active action plan exists.
+                    </p>
+                    <button onclick="createNewPlan()"
+                            style="background-color: #27ae60; color: white; padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 1em; font-weight: bold;">
+                        + Create New Plan
+                    </button>
+                </div>
+            `;
             document.getElementById('clear-plan-btn').style.display = 'none';
+            document.getElementById('btn-edit-plan').style.display = 'none';
+            document.getElementById('btn-add-step').style.display = 'none';
+            document.getElementById('btn-save-plan').style.display = 'none';
             return;
         }
 
+        // Show appropriate buttons based on edit mode
+        if (isPlanEditMode) {
+            renderPlanEditMode(planData);
+        } else {
+            renderPlanViewMode(planData);
+        }
+    }
+
+    // Render plan in view mode (read-only)
+    function renderPlanViewMode(planData) {
         document.getElementById('clear-plan-btn').style.display = 'block';
+        document.getElementById('btn-edit-plan').style.display = 'block';
+        document.getElementById('btn-add-step').style.display = 'none';
+        document.getElementById('btn-save-plan').style.display = 'none';
 
         let html = `<div style="margin-bottom: 15px;">
                         <strong style="color: #7aa5d2; font-size: 16px;">${planData.title}</strong>
@@ -923,6 +959,45 @@ document.addEventListener('DOMContentLoaded', () => {
         actionPlanContent.innerHTML = html;
     }
 
+    // Render plan in edit mode
+    function renderPlanEditMode(planData) {
+        document.getElementById('clear-plan-btn').style.display = 'none';
+        document.getElementById('btn-edit-plan').textContent = 'Cancel';
+        document.getElementById('btn-edit-plan').style.backgroundColor = '#95a5a6';
+        document.getElementById('btn-add-step').style.display = 'block';
+        document.getElementById('btn-save-plan').style.display = 'block';
+
+        let html = `<div style="margin-bottom: 15px;">
+                        <label style="color: #888; font-size: 12px; display: block; margin-bottom: 5px;">Plan Title:</label>
+                        <input type="text" id="edit-plan-title" value="${planData.title}"
+                               style="width: 100%; padding: 8px; background: #2d2d30; color: white; border: 1px solid #555; border-radius: 4px; font-family: monospace; box-sizing: border-box;">
+                    </div>
+                    <div id="edit-steps-container" style="margin-top: 15px;">`;
+
+        planData.steps.forEach((step, idx) => {
+            const isCompleted = step.completed;
+            const bgColor = isCompleted ? '#222' : '#2d2d30';
+            const textColor = isCompleted ? '#888' : '#fff';
+            const disabled = isCompleted ? 'readonly' : '';
+            const deleteDisabled = isCompleted ? 'disabled' : '';
+            const deleteBg = isCompleted ? '#444' : '#c0392b';
+            const deleteCursor = isCompleted ? 'not-allowed' : 'pointer';
+
+            html += `<div class="edit-step-item" style="display: flex; align-items: center; margin-bottom: 10px; gap: 8px;">
+                        <input type="checkbox" class="edit-step-check" ${isCompleted ? 'checked' : ''} style="margin: 0; flex-shrink: 0; width: 16px; height: 16px;">
+                        <input type="text" class="edit-step-text" value="${step.objective}" ${disabled}
+                               style="flex: 1; min-width: 0; padding: 8px; background: ${bgColor}; color: ${textColor}; border: 1px solid #555; border-radius: 4px; font-family: monospace; box-sizing: border-box;">
+                        <button onclick="this.parentElement.remove()" ${deleteDisabled}
+                                style="background: ${deleteBg}; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: ${deleteCursor}; flex-shrink: 0; width: 70px; min-width: 70px; max-width: 70px;">
+                            Delete
+                        </button>
+                     </div>`;
+        });
+
+        html += `</div>`;
+        actionPlanContent.innerHTML = html;
+    }
+
     // Request action plan data from server
     function requestActionPlan() {
         socket.emit('get_action_plan');
@@ -930,22 +1005,200 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Listen for action plan data from server
     socket.on('action_plan_data', (data) => {
+        // Don't update if user is currently editing/creating a plan
+        if (isPlanEditMode) {
+            console.log('Skipping plan update - user is in edit mode');
+            return;
+        }
+
         updateActionPlanButton(data);
         displayActionPlan(data);
     });
 
     // Listen for action plan cleared event
     socket.on('action_plan_cleared', () => {
-        actionPlanBtn.style.display = 'none';
+        actionPlanBtn.textContent = 'Action Plan (None)';
+        actionPlanBtn.style.borderColor = '#666';
+        actionPlanBtn.style.color = '#666';
         actionPlanContent.innerHTML = '<p style="color: #666; text-align: center;">No active action plan</p>';
         document.getElementById('clear-plan-btn').style.display = 'none';
-        closeModal('action-plan');
+        isPlanEditMode = false;
+        currentPlanData = null;
     });
 
     // Open modal when button clicked
     actionPlanBtn.onclick = () => {
         requestActionPlan();
         showModal('action-plan');
+    };
+
+    // Create new plan from zero
+    window.createNewPlan = () => {
+        isPlanEditMode = true;
+        currentPlanData = {
+            exists: true,
+            title: 'New Action Plan',
+            steps: [{ objective: 'Step 1', completed: false }],
+            total_steps: 1,
+            completed_steps: 0
+        };
+        displayActionPlan(currentPlanData);
+    };
+
+    // Toggle edit mode
+    window.togglePlanEditMode = () => {
+        if (!currentPlanData || !currentPlanData.exists) return;
+
+        isPlanEditMode = !isPlanEditMode;
+
+        if (!isPlanEditMode) {
+            // Exiting edit mode - restore original button state
+            document.getElementById('btn-edit-plan').textContent = 'Edit Plan';
+            document.getElementById('btn-edit-plan').style.backgroundColor = '#3498db';
+            // Refresh to show view mode
+            requestActionPlan();
+        } else {
+            // Entering edit mode
+            displayActionPlan(currentPlanData);
+        }
+    };
+
+    // Add a new step in edit mode
+    window.addEditStep = () => {
+        const container = document.getElementById('edit-steps-container');
+        if (!container) return;
+
+        const newStepHtml = `<div class="edit-step-item" style="display: flex; align-items: center; margin-bottom: 10px; gap: 8px;">
+                                <input type="checkbox" class="edit-step-check" style="margin: 0; flex-shrink: 0; width: 16px; height: 16px;">
+                                <input type="text" class="edit-step-text" value="" placeholder="Enter step objective..."
+                                       style="flex: 1; min-width: 0; padding: 8px; background: #2d2d30; color: #fff; border: 1px solid #555; border-radius: 4px; font-family: monospace; box-sizing: border-box;">
+                                <button onclick="this.parentElement.remove()"
+                                        style="background: #c0392b; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; flex-shrink: 0; width: 70px; min-width: 70px; max-width: 70px;">
+                                    Delete
+                                </button>
+                             </div>`;
+
+        container.insertAdjacentHTML('beforeend', newStepHtml);
+    };
+
+    // Toggle fullscreen mode for action plan modal
+    let isPlanFullscreen = false;
+    window.togglePlanFullscreen = () => {
+        const modal = document.getElementById('action-plan-modal');
+        const overlay = document.getElementById('action-plan-modal-overlay');
+        const content = document.getElementById('action-plan-content');
+        const btn = document.getElementById('btn-fullscreen-plan');
+
+        if (!modal || !overlay || !content) return;
+
+        isPlanFullscreen = !isPlanFullscreen;
+
+        if (isPlanFullscreen) {
+            // Enter fullscreen - CRITICAL: Reset transform to prevent off-screen positioning
+            modal.style.position = 'fixed';
+            modal.style.top = '0';
+            modal.style.left = '0';
+            modal.style.right = '0';
+            modal.style.bottom = '0';
+            modal.style.width = '100vw';
+            modal.style.height = '100vh';
+            modal.style.maxWidth = '100vw';
+            modal.style.margin = '0';
+            modal.style.borderRadius = '0';
+            modal.style.transform = 'none'; // CRITICAL: Override the default translate(-50%, -50%)
+            modal.style.overflowX = 'hidden'; // Prevent horizontal scroll
+            modal.style.boxSizing = 'border-box'; // Include padding in width calculation
+            modal.style.zIndex = '10001';
+
+            // Make content area take up more space
+            content.style.height = 'calc(100vh - 200px)';
+            content.style.maxHeight = 'calc(100vh - 200px)';
+
+            // Update overlay to be behind the fullscreen modal
+            overlay.style.zIndex = '10000';
+
+            // Update button icon
+            btn.textContent = '🗗';
+            btn.title = 'Exit Fullscreen';
+        } else {
+            // Exit fullscreen - restore all default values
+            modal.style.position = '';
+            modal.style.top = '';
+            modal.style.left = '';
+            modal.style.right = '';
+            modal.style.bottom = '';
+            modal.style.width = '';
+            modal.style.height = '';
+            modal.style.maxWidth = '';
+            modal.style.margin = '';
+            modal.style.borderRadius = '';
+            modal.style.transform = ''; // Restore default transform
+            modal.style.overflowX = ''; // Restore default overflow (will use inline style from layout.html)
+            modal.style.boxSizing = ''; // Restore default box-sizing (will use inline style from layout.html)
+            modal.style.zIndex = '';
+
+            // Reset content area
+            content.style.height = '';
+            content.style.maxHeight = '';
+
+            // Reset overlay
+            overlay.style.zIndex = '';
+
+            // Update button icon
+            btn.textContent = '⛶';
+            btn.title = 'Toggle Fullscreen';
+        }
+    };
+
+    // Save plan changes
+    window.savePlanChanges = () => {
+        const titleInput = document.getElementById('edit-plan-title');
+        const title = titleInput ? titleInput.value.trim() : currentPlanData?.title || 'Action Plan';
+
+        if (!title) {
+            alert('Plan title cannot be empty!');
+            return;
+        }
+
+        const stepElements = document.querySelectorAll('.edit-step-item');
+        const steps = [];
+
+        stepElements.forEach(el => {
+            const textInput = el.querySelector('.edit-step-text');
+            const checkInput = el.querySelector('.edit-step-check');
+            if (textInput && textInput.value.trim() !== '') {
+                steps.push({
+                    objective: textInput.value.trim(),
+                    completed: checkInput ? checkInput.checked : false
+                });
+            }
+        });
+
+        if (steps.length === 0) {
+            alert('Plan must have at least one step!');
+            return;
+        }
+
+        // Send update to server
+        fetch('/update_action_plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ title: title, steps: steps })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                isPlanEditMode = false;
+                alert('Plan saved successfully!');
+                requestActionPlan();
+            } else {
+                alert('Error saving plan: ' + (data.message || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error saving plan:', error);
+            alert('Network error while saving plan');
+        });
     };
 
     // Clear plan function (called from modal button)
@@ -958,7 +1211,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Auto-refresh action plan status every 3 seconds when chat tab is active
     setInterval(() => {
         const chatView = document.getElementById('view-chat');
-        if (chatView && chatView.style.display !== 'none') {
+        // Don't refresh if user is editing/creating a plan
+        if (chatView && chatView.style.display !== 'none' && !isPlanEditMode) {
             requestActionPlan();
         }
     }, 3000);

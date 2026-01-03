@@ -191,15 +191,27 @@
 
     <!-- Action Plan Modal -->
     <div id="action-plan-modal-overlay" class="modal-overlay"></div>
-    <div id="action-plan-modal" class="modal-content" style="min-width: 600px; max-width: 800px;">
-        <span class="modal-close-btn" data-modal-id="action-plan">&times;</span>
-        <h2>Action Plan Status</h2>
-        <div id="action-plan-content" style="background-color: #1e1e1e; border: 1px solid #444; border-radius: 4px; padding: 15px; margin-top: 10px; font-family: monospace; color: #d4d4d4;">
+    <div id="action-plan-modal" class="modal-content" style="min-width: 600px; max-width: 800px; overflow-x: hidden; box-sizing: border-box;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h2 style="margin: 0;">Action Plan Status</h2>
+            <div style="display: flex; gap: 10px;">
+                <button id="btn-fullscreen-plan" onclick="togglePlanFullscreen()"
+                        style="background-color: #34495e; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 16px;"
+                        title="Toggle Fullscreen">
+                    ⛶
+                </button>
+                <span class="modal-close-btn" data-modal-id="action-plan" style="position: static; margin: 0; cursor: pointer;">&times;</span>
+            </div>
+        </div>
+        <div id="action-plan-content" style="background-color: #1e1e1e; border: 1px solid #444; border-radius: 4px; padding: 15px; margin-top: 10px; font-family: monospace; color: #d4d4d4; overflow-y: auto; overflow-x: hidden; box-sizing: border-box;">
             <p style="color: #666; text-align: center;">No active action plan</p>
         </div>
         <div style="display: flex; gap: 10px; margin-top: 20px;">
             <button onclick="closeModal('action-plan')" style="background-color: #5c5c5c; width: auto; flex: 1;">Close</button>
-            <button id="clear-plan-btn" onclick="clearActionPlan()" style="background-color: #c0392b; width: auto; flex: 1;">Clear Plan</button>
+            <button id="btn-edit-plan" onclick="togglePlanEditMode()" style="background-color: #3498db; width: auto; flex: 1; display: none;">Edit Plan</button>
+            <button id="btn-add-step" onclick="addEditStep()" style="background-color: #27ae60; width: auto; flex: 1; display: none;">+ Add Step</button>
+            <button id="btn-save-plan" onclick="savePlanChanges()" style="background-color: #27ae60; width: auto; flex: 1; display: none;">Save Changes</button>
+            <button id="clear-plan-btn" onclick="clearActionPlan()" style="background-color: #c0392b; width: auto; flex: 1; display: none;">Clear Plan</button>
         </div>
     </div>
 
@@ -363,6 +375,12 @@ function closeModal(modalId) {
     const modal = document.getElementById(modalId + '-modal');
     const overlay = document.getElementById(modalId + '-modal-overlay');
     if (!modal || !overlay) return;
+
+    // If action-plan modal is in fullscreen, exit fullscreen first
+    if (modalId === 'action-plan' && window.isPlanFullscreen) {
+        window.togglePlanFullscreen();
+    }
+
     modal.classList.remove('active');
     overlay.classList.remove('active');
 }

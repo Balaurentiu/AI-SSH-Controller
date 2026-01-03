@@ -1680,6 +1680,58 @@ def handle_get_action_plan():
 
     socketio.emit('action_plan_data', response)
 
+@app.route('/update_action_plan', methods=['POST'])
+def update_action_plan():
+    """
+    Updates or creates an action plan from the UI.
+    Expected data: { title: "...", steps: [ {objective: "...", completed: boolean}, ... ] }
+    """
+    data = request.json
+    if not data:
+        return jsonify({'status': 'error', 'message': 'No data provided'})
+
+    title = data.get('title', 'Action Plan')
+    steps_data = data.get('steps', [])
+
+    if not steps_data:
+        return jsonify({'status': 'error', 'message': 'No steps provided'})
+
+    log_manager = GLOBAL_STATE.get('log_manager')
+    if log_manager:
+        # Extract step objectives for set_action_plan (which expects List[str])
+        step_objectives = [step.get('objective', '') for step in steps_data if step.get('objective')]
+
+        # Set the plan (this creates/pushes a new plan)
+        log_manager.set_action_plan(title, step_objectives)
+
+        # Now we need to update the completion status for each step
+        # Load the stack and update the active plan's completed flags
+        stack = log_manager.action_plan.load_stack()
+        if stack and 'steps' in stack[-1]:
+            active_plan = stack[-1]
+            for idx, step_data in enumerate(steps_data):
+                if idx < len(active_plan['steps']) and step_data.get('completed', False):
+                    active_plan['steps'][idx]['completed'] = True
+
+            # Save the updated stack
+            log_manager.action_plan._save_stack(stack)
+
+        # Emit update to all clients
+        updated_plan = log_manager.action_plan.get_active_plan()
+        if updated_plan:
+            socketio.emit('action_plan_data', {
+                'exists': True,
+                'title': updated_plan.get('title', 'Action Plan'),
+                'steps': updated_plan.get('steps', []),
+                'completed_steps': sum(1 for s in updated_plan.get('steps', []) if s.get('completed', False)),
+                'total_steps': len(updated_plan.get('steps', [])),
+                'next_step_index': next((i + 1 for i, s in enumerate(updated_plan.get('steps', [])) if not s.get('completed', False)), None)
+            })
+
+        return jsonify({'status': 'success'})
+
+    return jsonify({'status': 'error', 'message': 'Log manager not available'})
+
 @socketio.on('clear_action_plan')
 def handle_clear_action_plan():
     """
