@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <title>AI Agent Controller</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         html, body { height: 100%; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #e0e0e0; }
         body { display: flex; flex-direction: column; }
@@ -67,6 +68,22 @@
         .column { padding: 20px; display: flex; flex-direction: column; gap: 20px; }
         .column-left { flex: 1; min-width: 300px; }
         .column-right { flex: 2; }
+
+        /* Fullscreen chat mode */
+        #main-left-column.fullscreen-chat-mode {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 9999;
+            background-color: #1e1e1e;
+            padding: 0;
+        }
+        #main-left-column.fullscreen-chat-mode + .column-right {
+            display: none;
+        }
+
         .section { display: flex; flex-direction: column; min-height: 0; }
         .section.is-flexible { flex-grow: 1; }
         h2 { color: #7aa5d2; border-bottom: 1px solid #444; padding-bottom: 10px; margin: 0 0 10px 0; flex-shrink: 0; }
@@ -120,6 +137,196 @@
             outline: none;
             border-color: #0e639c;
         }
+
+        /* Uniform Config Chips */
+        .config-chip {
+            background: #2a2a2d;
+            border: 1px solid #444;
+            border-radius: 6px;
+            padding: 8px 12px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 65px; /* Force all chips to be taller */
+            transition: background 0.2s, border-color 0.2s;
+        }
+
+        .config-chip:hover {
+            background: #333;
+            border-color: #666;
+        }
+
+        .config-chip-title {
+            font-weight: bold;
+            color: #fff;
+            font-size: 0.9em;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .config-chip-detail {
+            font-size: 0.75em;
+            color: #aaa;
+            line-height: 1.3;
+        }
+
+        /* --- CHAT RESIZER STYLES --- */
+        #view-chat {
+            display: none; /* Controlled by tab logic, flex when active */
+            flex-direction: column;
+            height: 100%; /* Fill entire parent column height */
+            overflow: hidden; /* Prevent outer scroll */
+        }
+
+        /* --- CHAT HEADER (Fixed Top) --- */
+        .chat-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            background-color: #252526; /* Slightly lighter than bg */
+            border-bottom: 1px solid #333;
+            flex-shrink: 0; /* Never shrink */
+            height: 50px; /* Fixed height */
+            box-sizing: border-box;
+        }
+
+        .chat-header-title {
+            font-weight: bold;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+        }
+
+        .chat-header-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .header-btn {
+            background: transparent;
+            border: 1px solid #444;
+            color: #aaa;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: 0.2s;
+        }
+
+        .header-btn:hover {
+            background: #333;
+            color: white;
+        }
+
+        /* Chat History Container - Sits below fixed header */
+        #chat-history-container {
+            flex: 1; /* KEY: Expands to fill all free space */
+            overflow-y: auto;
+            padding: 15px;
+            background-color: #121212;
+            min-height: 0; /* Allow flexbox to shrink if needed */
+        }
+
+        /* Ensure chat history div inside container scrolls properly */
+        #chat-history {
+            min-height: 100%;
+        }
+
+        /* The Draggable Handle */
+        #chat-resizer-handle {
+            height: 12px;
+            background-color: #1e1e1e;
+            border-top: 1px solid #333;
+            border-bottom: 1px solid #333;
+            cursor: row-resize;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0; /* Prevent handle from squishing */
+            z-index: 10;
+            transition: background 0.2s;
+        }
+
+        #chat-resizer-handle:hover, #chat-resizer-handle.dragging {
+            background-color: #333;
+        }
+
+        /* The visual 'grip' lines in the handle */
+        .resizer-grip {
+            width: 40px;
+            height: 4px;
+            background-color: #555;
+            border-radius: 2px;
+        }
+
+        /* The Input Container (Resizable) */
+        #chat-input-container {
+            height: 140px; /* Default Initial Height */
+            min-height: 80px;
+            max-height: 60vh;
+            display: flex;
+            flex-direction: column;
+            background-color: #181818;
+            border-top: 1px solid #333;
+            flex-shrink: 0; /* Do not shrink automatically */
+        }
+
+        /* Wrapper for Textarea and Button (Row Layout) */
+        .chat-input-wrapper {
+            flex: 1; /* Fill remaining space in input container */
+            display: flex;
+            gap: 10px;
+            padding: 10px;
+            height: 100%; /* Fill parent container */
+            box-sizing: border-box;
+        }
+
+        /* Textarea fills all available height */
+        #chat-input {
+            flex: 1;
+            height: 100% !important;
+            background: #111;
+            color: #eee;
+            border: 1px solid #444;
+            border-radius: 4px;
+            resize: none; /* Disable native resizer */
+            padding: 10px;
+            box-sizing: border-box;
+            font-family: inherit;
+        }
+
+        /* Button Container - Anchors button at bottom */
+        .chat-btn-container {
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end; /* Push content to bottom */
+            width: 80px;
+        }
+
+        /* Send Button - Fixed Height */
+        #send-chat-btn {
+            height: 40px; /* FIXED height */
+            width: 100%;
+            background: #2196F3;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            font-size: 14px;
+        }
+
+        #send-chat-btn:hover {
+            background: #1976D2;
+        }
     </style>
 </head>
 <body>
@@ -129,12 +336,47 @@
     </nav>
 
     <div class="settings-bar">
-        <div id="agent-config-trigger" class="config-trigger {{ llm_status.status }}"> <h3>Agent & LLM Configuration</h3> <div id="agent-summary" class="summary-text">{{ llm_status.message }}</div> </div>
-        <div id="system-config-trigger" class="config-trigger {{ ssh_status.status }}"> <h3>Remote System Connection</h3> <div id="system-summary" class="summary-text">{{ ssh_status.message }}</div> </div>
-        <div id="prompt-editor-trigger" class="config-trigger"> <h3>Prompt Editor</h3> <div class="summary-text">Modify agent instruction templates</div> </div>
-        <div id="summarization-prompt-trigger" class="config-trigger"> <h3>Summarization Prompt</h3> <div class="summary-text">Modify LLM summarization templates</div> </div>
-        <div id="validator-prompt-trigger" class="config-trigger"> <h3>Validator Prompt</h3> <div class="summary-text">Modify command validation templates</div> </div>
-        <div id="manual-summarize-trigger" class="config-trigger {% if llm_status.status != 'success' %}disabled{% endif %}"> <h3>Manual Summarize</h3> <div id="history-char-count" class="summary-text">0 chars</div> </div>
+        <div id="agent-config-trigger" class="config-chip">
+            <div class="config-chip-title">
+                <i class="fa-solid fa-microchip"></i> Agent & LLM
+            </div>
+            <div class="config-chip-detail">
+                <div id="lbl-exec-info">Loading...</div>
+                <div id="lbl-chat-info">Loading...</div>
+            </div>
+        </div>
+        <div id="system-config-trigger" class="config-chip">
+            <div class="config-chip-title">
+                <i class="fa-solid fa-network-wired"></i> Remote System
+            </div>
+            <div class="config-chip-detail" id="system-summary">{{ ssh_status.message }}</div>
+        </div>
+        <div id="prompt-editor-trigger" class="config-chip">
+            <div class="config-chip-title">
+                <i class="fa-solid fa-file-code"></i> Prompt Editor
+            </div>
+            <div class="config-chip-detail">Modify agent instruction templates</div>
+        </div>
+        <div id="summarization-prompt-trigger" class="config-chip">
+            <div class="config-chip-title">
+                <i class="fa-solid fa-compress"></i> Summarization
+            </div>
+            <div class="config-chip-detail">Modify LLM summarization templates</div>
+        </div>
+        <div id="validator-prompt-trigger" class="config-chip">
+            <div class="config-chip-title">
+                <i class="fa-solid fa-shield-halved"></i> Validator
+            </div>
+            <div class="config-chip-detail">Modify command validation templates</div>
+        </div>
+        <div id="manual-summarize-trigger" class="config-chip {% if llm_status.status != 'success' %}disabled{% endif %}">
+            <div class="config-chip-title">
+                <i class="fa-solid fa-clock-rotate-left"></i> Summarize
+            </div>
+            <div class="config-chip-detail">
+                <div id="history-char-count">0 chars</div>
+            </div>
+        </div>
     </div>
     
     <div class="content"> {% block content %}{% endblock %} </div>
@@ -216,42 +458,98 @@
     </div>
 
     <div id="agent-modal-overlay" class="modal-overlay"></div>
-    <div id="agent-modal" class="modal-content"> 
-        <span class="modal-close-btn" data-modal-id="agent">&times;</span> 
-        <h2>Agent & LLM Configuration</h2> 
-        <fieldset class="modal-fieldset"> 
-            <div class="settings-item"> 
-                <label for="provider-select">Provider:</label> 
-                <select id="provider-select">
-                    <option value="ollama">Ollama (Local)</option>
-                    <option value="gemini">Gemini (Cloud)</option>
-                    <option value="anthropic">Anthropic Claude (Cloud)</option>
-                </select> 
-            </div> 
-            <div class="settings-item with-button"> 
-                <div>
-                    <label for="model-select">Model:</label> 
-                    <select id="model-select"></select>
+    <div id="agent-modal" class="modal-content" style="min-width: 900px; max-width: 1200px;">
+        <span class="modal-close-btn" data-modal-id="agent">&times;</span>
+        <h2>Agent & LLM Configuration</h2>
+
+        <!-- Dual LLM Configuration -->
+        <div style="display: flex; gap: 20px; margin-bottom: 20px;">
+
+            <!-- Execution LLM (Left Column) -->
+            <div style="flex: 1; background: #252526; padding: 15px; border-radius: 4px; border: 2px solid #0e639c;">
+                <h3 style="margin-top: 0; color: #7aa5d2; font-size: 16px;">Execution LLM</h3>
+
+                <div style="margin-bottom: 15px;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Provider</label>
+                    <select id="exec-provider" onchange="updateProviderFields('exec')" style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace;">
+                        <option value="ollama">Ollama (Local)</option>
+                        <option value="gemini">Gemini (Cloud)</option>
+                        <option value="anthropic">Anthropic Claude (Cloud)</option>
+                    </select>
                 </div>
-                <button id="fetch-models-btn">Fetch Models</button>
-            </div> 
-            <div id="gemini-key-div" class="settings-item full-width" style="display: none;">
-                <label for="gemini-key">Gemini API Key:</label>
-                <input type="password" id="gemini-key" placeholder="Enter Gemini API Key">
+
+                <div style="margin-bottom: 15px;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Model</label>
+                    <div style="display: flex; gap: 10px;">
+                        <select id="exec-model" style="flex: 1; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace;">
+                            <option value="">-- Click Fetch to load models --</option>
+                        </select>
+                        <button onclick="fetchModelsForScope('exec')" style="padding: 8px 15px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;">Fetch</button>
+                    </div>
+                </div>
+
+                <div id="exec-ollama-url" style="margin-bottom: 15px;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Ollama API URL</label>
+                    <input type="text" id="exec-ollama-url-input" value="http://localhost:11434" style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box;">
+                </div>
+
+                <div id="exec-gemini-key" style="margin-bottom: 15px; display: none;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Gemini API Key</label>
+                    <input type="password" id="exec-gemini-key-input" placeholder="AIzaSy..." style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box;">
+                </div>
+
+                <div id="exec-anthropic-key" style="margin-bottom: 15px; display: none;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Anthropic API Key</label>
+                    <input type="password" id="exec-anthropic-key-input" placeholder="sk-ant-..." style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box;">
+                </div>
             </div>
-            <div id="anthropic-key-div" class="settings-item full-width" style="display: none;">
-                <label for="anthropic-key">Anthropic API Key:</label>
-                <input type="password" id="anthropic-key" placeholder="Enter Anthropic API Key">
+
+            <!-- Chat LLM (Right Column) -->
+            <div style="flex: 1; background: #252526; padding: 15px; border-radius: 4px; border: 2px solid #4CAF50;">
+                <h3 style="margin-top: 0; color: #4CAF50; font-size: 16px;">Chat LLM</h3>
+
+                <div style="margin-bottom: 15px;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Provider</label>
+                    <select id="chat-provider" onchange="updateProviderFields('chat')" style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace;">
+                        <option value="ollama">Ollama (Local)</option>
+                        <option value="gemini">Gemini (Cloud)</option>
+                        <option value="anthropic">Anthropic Claude (Cloud)</option>
+                    </select>
+                </div>
+
+                <div style="margin-bottom: 15px;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Model</label>
+                    <div style="display: flex; gap: 10px;">
+                        <select id="chat-model" style="flex: 1; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace;">
+                            <option value="">-- Click Fetch to load models --</option>
+                        </select>
+                        <button onclick="fetchModelsForScope('chat')" style="padding: 8px 15px; background: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;">Fetch</button>
+                    </div>
+                </div>
+
+                <div id="chat-ollama-url" style="margin-bottom: 15px;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Ollama API URL</label>
+                    <input type="text" id="chat-ollama-url-input" value="http://localhost:11434" style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box;">
+                </div>
+
+                <div id="chat-gemini-key" style="margin-bottom: 15px; display: none;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Gemini API Key</label>
+                    <input type="password" id="chat-gemini-key-input" placeholder="AIzaSy..." style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box;">
+                </div>
+
+                <div id="chat-anthropic-key" style="margin-bottom: 15px; display: none;">
+                    <label style="font-size: 14px; margin-bottom: 5px; color: #aaa; display: block;">Anthropic API Key</label>
+                    <input type="password" id="chat-anthropic-key-input" placeholder="sk-ant-..." style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 8px; font-family: monospace; box-sizing: border-box;">
+                </div>
             </div>
-            <div id="ollama-url-div" class="settings-item full-width"> 
-                <label for="ollama-url">API URL:</label> 
-                <div id="ollama-url-status" class="status-label"></div> 
-                <input type="text" id="ollama-url" value="http://localhost:11434"> 
-            </div> 
-            <div class="settings-item"> 
-                <label for="max-steps">Max Steps:</label> 
-                <input type="number" id="max-steps" value="50" min="1" max="500"> 
-            </div> 
+        </div>
+
+        <!-- Shared Settings -->
+        <fieldset class="modal-fieldset">
+            <div class="settings-item">
+                <label for="max-steps">Max Steps:</label>
+                <input type="number" id="max-steps" value="50" min="1" max="500">
+            </div>
             <div class="settings-item">
                 <label for="summarization-threshold">Summarization Threshold:</label>
                 <input type="number" id="summarization-threshold" value="15000" min="0" max="100000">
@@ -265,6 +563,7 @@
                 <input type="number" id="chat-history-count" value="20" min="0" max="100">
             </div>
         </fieldset>
+
         <button id="save-agent-btn">Save Agent Configuration</button>
     </div>
     
@@ -390,13 +689,150 @@ function showModal(modalId) { openModal(modalId); }
 function handleSummarizationDecision(doSummarize) {
     const newThresholdInput = document.getElementById('new-threshold-input');
     const newThreshold = newThresholdInput.value;
-    
+
     socket.emit('summarize_decision', {
         summarize: doSummarize,
         new_threshold: newThreshold ? parseInt(newThreshold) : null
     });
-    
+
     closeModal('summarization-decision');
+}
+
+// --- DUAL LLM CONFIGURATION FUNCTIONS (Global scope for onclick) ---
+
+// Helper function to set model in select dropdown (adds option if not exists)
+function setModelInDropdown(selectId, modelName) {
+    const selectElement = document.getElementById(selectId);
+    if (!selectElement) return;
+
+    // If model name is empty, just clear to default
+    if (!modelName) {
+        selectElement.innerHTML = '<option value="">-- Click Fetch to load models --</option>';
+        return;
+    }
+
+    // Check if the model already exists as an option
+    let optionExists = false;
+    for (let i = 0; i < selectElement.options.length; i++) {
+        if (selectElement.options[i].value === modelName) {
+            optionExists = true;
+            break;
+        }
+    }
+
+    // If option doesn't exist, add it (preserving existing options)
+    if (!optionExists) {
+        const option = document.createElement('option');
+        option.value = modelName;
+        option.textContent = modelName;
+        selectElement.appendChild(option);
+    }
+
+    // Set the value
+    selectElement.value = modelName;
+    console.log(`[setModelInDropdown] Set ${selectId} to ${modelName}`);
+}
+
+// Update provider-specific fields visibility
+function updateProviderFields(scope) {
+    const provider = document.getElementById(`${scope}-provider`).value;
+
+    const ollamaUrl = document.getElementById(`${scope}-ollama-url`);
+    const geminiKey = document.getElementById(`${scope}-gemini-key`);
+    const anthropicKey = document.getElementById(`${scope}-anthropic-key`);
+
+    // Hide all first
+    ollamaUrl.style.display = 'none';
+    geminiKey.style.display = 'none';
+    anthropicKey.style.display = 'none';
+
+    // Show relevant field
+    if (provider === 'ollama') {
+        ollamaUrl.style.display = 'block';
+    } else if (provider === 'gemini') {
+        geminiKey.style.display = 'block';
+    } else if (provider === 'anthropic') {
+        anthropicKey.style.display = 'block';
+    }
+}
+
+// Fetch models for specific scope (exec or chat)
+function fetchModelsForScope(scope) {
+    const provider = document.getElementById(`${scope}-provider`).value;
+    let apiKey = '';
+
+    if (provider === 'gemini') {
+        apiKey = document.getElementById(`${scope}-gemini-key-input`).value;
+    } else if (provider === 'anthropic') {
+        apiKey = document.getElementById(`${scope}-anthropic-key-input`).value;
+    }
+
+    console.log(`[fetchModelsForScope] Scope: ${scope}, Provider: ${provider}, API Key: ${apiKey ? '***' : '(none)'}`);
+
+    const originalCursor = document.body.style.cursor;
+    document.body.style.cursor = 'wait';
+
+    fetch('/get_models', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            provider: provider,
+            api_key: apiKey
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        document.body.style.cursor = originalCursor;
+
+        console.log(`[fetchModelsForScope] Response for ${scope}:`, data);
+
+        if (data.status === 'success') {
+            const selectElement = document.getElementById(`${scope}-model`);
+            console.log(`[fetchModelsForScope] Select element for ${scope}:`, selectElement);
+
+            // Store currently selected value (if any)
+            const currentValue = selectElement.value;
+            console.log(`[fetchModelsForScope] Current value: ${currentValue}`);
+
+            // Clear and repopulate
+            selectElement.innerHTML = '';
+
+            // Add default option
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = '-- Select a model --';
+            selectElement.appendChild(defaultOption);
+
+            // Add all fetched models
+            data.models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                selectElement.appendChild(option);
+            });
+
+            // Try to restore previous selection if it exists in the new list
+            if (currentValue && data.models.includes(currentValue)) {
+                selectElement.value = currentValue;
+                console.log(`[fetchModelsForScope] Restored previous selection: ${currentValue}`);
+            } else if (data.models.length > 0) {
+                // If no previous selection or it's not in the list, select first model
+                selectElement.value = data.models[0];
+                console.log(`[fetchModelsForScope] Auto-selected first model: ${data.models[0]}`);
+            }
+
+            console.log(`[fetchModelsForScope] Populated ${data.models.length} models for ${scope}`);
+            alert(`Found ${data.models.length} models for ${scope.toUpperCase()}. Select from dropdown.`);
+        } else {
+            console.error(`[fetchModelsForScope] Error for ${scope}:`, data.message);
+            alert('Error: ' + data.message);
+        }
+    })
+    .catch(e => {
+        document.body.style.cursor = originalCursor;
+        console.error(`[fetchModelsForScope] Request failed for ${scope}:`, e);
+        alert('Request Failed: ' + e);
+    });
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -427,171 +863,51 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Agent & LLM configuration modal logic
-    const providerSelect = document.getElementById('provider-select');
-    const modelSelect = document.getElementById('model-select');
-    const geminiKeyDiv = document.getElementById('gemini-key-div');
-    const geminiKey = document.getElementById('gemini-key');
-    const anthropicKeyDiv = document.getElementById('anthropic-key-div');
-    const anthropicKey = document.getElementById('anthropic-key');
-    const ollamaUrlDiv = document.getElementById('ollama-url-div');
-    const ollamaUrl = document.getElementById('ollama-url');
-    const ollamaUrlStatus = document.getElementById('ollama-url-status');
     const maxSteps = document.getElementById('max-steps');
     const summarizationThreshold = document.getElementById('summarization-threshold');
     const llmTimeout = document.getElementById('llm-timeout');
     const chatHistoryCount = document.getElementById('chat-history-count');
     const saveAgentBtn = document.getElementById('save-agent-btn');
-    const fetchModelsBtn = document.getElementById('fetch-models-btn');
-    const agentSummary = document.getElementById('agent-summary');
 
-    let ollamaModels = [];
-    let geminiModels = [];
-    let anthropicModels = [];
-    let testingOllama = false;
-    
-    agentTrigger.addEventListener('click', function() { 
+    agentTrigger.addEventListener('click', function() {
         if(this.classList.contains('disabled')) return;
         fetch('/get_agent_config').then(res => res.json()).then(data => {
-            providerSelect.value = data.provider;
-            geminiKey.value = data.gemini_api_key || '';
-            anthropicKey.value = data.anthropic_api_key || '';
-            ollamaUrl.value = data.ollama_api_url || 'http://localhost:11434';
+            // Load Execution LLM Settings
+            document.getElementById('exec-provider').value = data.provider || 'ollama';
+            setModelInDropdown('exec-model', data.model_name || '');
+            document.getElementById('exec-ollama-url-input').value = data.ollama_api_url || 'http://localhost:11434';
+            document.getElementById('exec-gemini-key-input').value = data.gemini_api_key || '';
+            document.getElementById('exec-anthropic-key-input').value = data.anthropic_api_key || '';
+            updateProviderFields('exec');
+
+            // Load Chat LLM Settings
+            if (data.chat_llm) {
+                document.getElementById('chat-provider').value = data.chat_llm.provider || 'ollama';
+                setModelInDropdown('chat-model', data.chat_llm.model_name || '');
+                document.getElementById('chat-ollama-url-input').value = data.ollama_api_url || 'http://localhost:11434';
+                document.getElementById('chat-gemini-key-input').value = data.chat_llm.api_key || '';
+                document.getElementById('chat-anthropic-key-input').value = data.chat_llm.api_key || '';
+                updateProviderFields('chat');
+            } else {
+                // Default chat to same as exec
+                document.getElementById('chat-provider').value = data.provider || 'ollama';
+                setModelInDropdown('chat-model', data.model_name || '');
+                document.getElementById('chat-ollama-url-input').value = data.ollama_api_url || 'http://localhost:11434';
+                document.getElementById('chat-gemini-key-input').value = data.gemini_api_key || '';
+                document.getElementById('chat-anthropic-key-input').value = data.anthropic_api_key || '';
+                updateProviderFields('chat');
+            }
+
+            // Load Shared Settings
             maxSteps.value = data.max_steps;
             summarizationThreshold.value = data.summarization_threshold;
             llmTimeout.value = data.llm_timeout || 120;
             chatHistoryCount.value = data.chat_history_message_count || 20;
-            updateProviderUI();
-            if (data.model_name) {
-                modelSelect.value = data.model_name;
-            }
+
         }).catch(e => console.error('Error loading agent config:', e));
         openModal('agent');
     });
 
-    providerSelect.addEventListener('change', updateProviderUI);
-
-    function updateProviderUI() {
-        const provider = providerSelect.value;
-        modelSelect.innerHTML = '';
-
-        if (provider === 'ollama') {
-            geminiKeyDiv.style.display = 'none';
-            anthropicKeyDiv.style.display = 'none';
-            ollamaUrlDiv.style.display = '';
-            ollamaModels.forEach(m => {
-                const opt = new Option(m, m);
-                modelSelect.appendChild(opt);
-            });
-            if (ollamaModels.length === 0) {
-                modelSelect.appendChild(new Option('Click Fetch Models to load', ''));
-            }
-        } else if (provider === 'gemini') {
-            geminiKeyDiv.style.display = '';
-            anthropicKeyDiv.style.display = 'none';
-            ollamaUrlDiv.style.display = 'none';
-            geminiModels.forEach(m => {
-                const opt = new Option(m, m);
-                modelSelect.appendChild(opt);
-            });
-            if (geminiModels.length === 0) {
-                modelSelect.appendChild(new Option('Click Fetch Models after entering API Key', ''));
-            }
-        } else if (provider === 'anthropic') {
-            geminiKeyDiv.style.display = 'none';
-            anthropicKeyDiv.style.display = '';
-            ollamaUrlDiv.style.display = 'none';
-            anthropicModels.forEach(m => {
-                const opt = new Option(m, m);
-                modelSelect.appendChild(opt);
-            });
-            if (anthropicModels.length === 0) {
-                modelSelect.appendChild(new Option('Click Fetch Models after entering API Key', ''));
-            }
-        }
-    }
-
-    // Fetch Models button handler
-    fetchModelsBtn.addEventListener('click', function() {
-        const provider = providerSelect.value;
-        
-        if (provider === 'ollama') {
-            ollamaUrlStatus.textContent = 'Fetching models...';
-            ollamaUrlStatus.className = 'status-label';
-            
-            fetch('/test_ollama', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({api_url: ollamaUrl.value})
-            }).then(res => res.json()).then(data => {
-                if (data.status === 'success') {
-                    ollamaUrlStatus.textContent = `✓ Connected (${data.models.length} models found)`;
-                    ollamaUrlStatus.className = 'status-label success';
-                    ollamaModels = data.models;
-                    updateProviderUI();
-                } else {
-                    ollamaUrlStatus.textContent = `✗ ${data.message}`;
-                    ollamaUrlStatus.className = 'status-label failure';
-                    ollamaModels = [];
-                    updateProviderUI();
-                }
-            }).catch(() => {
-                ollamaUrlStatus.textContent = '✗ Connection test failed';
-                ollamaUrlStatus.className = 'status-label failure';
-            });
-        } else if (provider === 'gemini') {
-            if (!geminiKey.value) {
-                alert('Please enter a Gemini API Key first.');
-                return;
-            }
-            
-            fetchModelsBtn.textContent = 'Fetching...';
-            fetch('/test_gemini', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({api_key: geminiKey.value})
-            }).then(res => res.json()).then(data => {
-                fetchModelsBtn.textContent = 'Fetch Models';
-                if (data.status === 'success') {
-                    geminiModels = data.models;
-                    updateProviderUI();
-                    alert(`Found ${data.models.length} Gemini models.`);
-                } else {
-                    geminiModels = [];
-                    updateProviderUI();
-                    alert(`Error: ${data.message}`);
-                }
-            }).catch(() => {
-                fetchModelsBtn.textContent = 'Fetch Models';
-                alert('Failed to fetch Gemini models.');
-            });
-        } else if (provider === 'anthropic') {
-            if (!anthropicKey.value) {
-                alert('Please enter an Anthropic API Key first.');
-                return;
-            }
-
-            fetchModelsBtn.textContent = 'Fetching...';
-            fetch('/test_anthropic', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({api_key: anthropicKey.value})
-            }).then(res => res.json()).then(data => {
-                fetchModelsBtn.textContent = 'Fetch Models';
-                if (data.status === 'success') {
-                    anthropicModels = data.models;
-                    updateProviderUI();
-                    alert(`Found ${data.models.length} Anthropic models.`);
-                } else {
-                    anthropicModels = [];
-                    updateProviderUI();
-                    alert(`Error: ${data.message}`);
-                }
-            }).catch(() => {
-                fetchModelsBtn.textContent = 'Fetch Models';
-                alert('Failed to fetch Anthropic models.');
-            });
-        }
-    });
 
     // Auto-update summarization threshold when changed in Agent config
     summarizationThreshold.addEventListener('change', function() {
@@ -599,18 +915,42 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     saveAgentBtn.addEventListener('click', function() {
+        // Get Execution LLM config
+        const execProvider = document.getElementById('exec-provider').value;
+        const execModel = document.getElementById('exec-model').value;
+        const execOllamaUrl = document.getElementById('exec-ollama-url-input').value;
+        const execGeminiKey = document.getElementById('exec-gemini-key-input').value;
+        const execAnthropicKey = document.getElementById('exec-anthropic-key-input').value;
+
+        // Get Chat LLM config
+        const chatProvider = document.getElementById('chat-provider').value;
+        const chatModel = document.getElementById('chat-model').value;
+        let chatApiKey = '';
+        if (chatProvider === 'gemini') {
+            chatApiKey = document.getElementById('chat-gemini-key-input').value;
+        } else if (chatProvider === 'anthropic') {
+            chatApiKey = document.getElementById('chat-anthropic-key-input').value;
+        }
+
         const config = {
-            provider: providerSelect.value,
-            model_name: modelSelect.value,
-            gemini_api_key: geminiKey.value,
-            anthropic_api_key: anthropicKey.value,
-            ollama_api_url: ollamaUrl.value,
+            provider: execProvider,
+            model_name: execModel,
+            gemini_api_key: execGeminiKey,
+            anthropic_api_key: execAnthropicKey,
+            ollama_api_url: execOllamaUrl,
             max_steps: parseInt(maxSteps.value),
             summarization_threshold: parseInt(summarizationThreshold.value),
             llm_timeout: parseInt(llmTimeout.value),
-            chat_history_message_count: parseInt(chatHistoryCount.value)
+            chat_history_message_count: parseInt(chatHistoryCount.value),
+            // Chat LLM Configuration (always save, enabled=true)
+            chat_llm: {
+                enabled: true,  // Always enabled in dual config mode
+                provider: chatProvider,
+                model_name: chatModel,
+                api_key: chatApiKey
+            }
         };
-        
+
         fetch('/save_agent_config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
@@ -1022,10 +1362,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateAgentTriggerStatus() {
-        fetch('/get_llm_status').then(res => res.json()).then(data => {
-            agentTrigger.className = 'config-trigger ' + data.status;
-            agentSummary.textContent = data.message;
-            const isSuccess = data.status === 'success';
+        // Fetch both LLM status and agent config for dual-model display
+        Promise.all([
+            fetch('/get_llm_status').then(res => res.json()),
+            fetch('/get_agent_config').then(res => res.json())
+        ]).then(([statusData, configData]) => {
+            // Update manual summarize trigger based on status
+            const isSuccess = statusData.status === 'success';
             if(manualSummarizeTrigger) {
                 if(isSuccess) {
                     manualSummarizeTrigger.classList.remove('disabled');
@@ -1033,31 +1376,51 @@ document.addEventListener('DOMContentLoaded', () => {
                     manualSummarizeTrigger.classList.add('disabled');
                 }
             }
+
+            // Update dual-model info display
+            const lblExec = document.getElementById('lbl-exec-info');
+            const lblChat = document.getElementById('lbl-chat-info');
+
+            if (lblExec && lblChat) {
+                // 1. EXEC Info
+                let execProvider = configData.provider || 'Unknown';
+                let execModel = configData.model_name || 'Default';
+                // Clean path like 'models/gemini-pro' -> 'gemini-pro'
+                if (execModel.includes('/')) execModel = execModel.split('/').pop();
+
+                // Format: Exec: Provider (Model)
+                lblExec.innerHTML = `<span style="color:#4CAF50; font-weight:bold;">Exec:</span> ${execProvider} <span style="opacity:0.7">(${execModel})</span>`;
+
+                // 2. CHAT Info
+                if (configData.chat_llm && configData.chat_llm.enabled) {
+                    let chatProvider = configData.chat_llm.provider || execProvider;
+                    let chatModel = configData.chat_llm.model_name || execModel;
+                    if (chatModel.includes('/')) chatModel = chatModel.split('/').pop();
+
+                    lblChat.innerHTML = `<span style="color:#2196F3; font-weight:bold;">Chat:</span> ${chatProvider} <span style="opacity:0.7">(${chatModel})</span>`;
+                } else {
+                    lblChat.innerHTML = `<span style="color:#666;">Chat: (Same as Exec)</span>`;
+                }
+            }
+        }).catch(err => {
+            console.error('Error updating agent trigger status:', err);
         });
     }
 
     function updateSystemTriggerStatus() {
         fetch('/get_ssh_status').then(res => res.json()).then(data => {
-            systemTrigger.className = 'config-trigger ' + data.status;
+            systemTrigger.className = 'config-chip ' + data.status;
             systemSummary.textContent = data.message;
         });
     }
 
     socket.on('llm_status_update', (data) => {
-        agentTrigger.className = 'config-trigger ' + data.status;
-        agentSummary.textContent = data.message;
-        const isSuccess = data.status === 'success';
-        if(manualSummarizeTrigger) {
-            if(isSuccess) {
-                manualSummarizeTrigger.classList.remove('disabled');
-            } else {
-                manualSummarizeTrigger.classList.add('disabled');
-            }
-        }
+        // Update full agent trigger with dual-model display
+        updateAgentTriggerStatus();
     });
 
     socket.on('ssh_status_update', (data) => {
-        systemTrigger.className = 'config-trigger ' + data.status;
+        systemTrigger.className = 'config-chip ' + data.status;
         systemSummary.textContent = data.message;
     });
 

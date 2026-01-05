@@ -389,6 +389,58 @@ def initialize_llm_status():
             "message": f"Unknown provider: {provider}"
         }
 
+    # Initialize Chat LLM (separate from execution LLM)
+    use_separate_chat_llm = cfg.getboolean('ChatLLM', 'enabled', fallback=False)
+    print(f"[CHAT LLM INIT] ChatLLM.enabled = {use_separate_chat_llm}", flush=True)
+
+    if use_separate_chat_llm:
+        print("[CHAT LLM INIT] Initializing separate Chat LLM...", flush=True)
+        chat_provider = cfg.get('ChatLLM', 'provider', fallback='ollama')
+        chat_model = cfg.get('ChatLLM', 'model_name', fallback='')
+        chat_api_key = cfg.get('ChatLLM', 'api_key', fallback='')
+
+        print(f"[CHAT LLM INIT] Provider: {chat_provider}, Model: {chat_model}", flush=True)
+
+        # Always read Ollama URL from main config to avoid Docker localhost issues
+        ollama_url = cfg.get('Ollama', 'api_url', fallback='http://localhost:11434')
+
+        try:
+            # Initialize chat LLM
+            if chat_provider == 'ollama':
+                from langchain_community.llms import Ollama
+                print(f"[CHAT LLM INIT] Creating Ollama instance: model={chat_model}, url={ollama_url}", flush=True)
+                GLOBAL_STATE['chat_llm'] = Ollama(model=chat_model, base_url=ollama_url, timeout=120)
+                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Ollama ({chat_model}) on {ollama_url}", flush=True)
+            elif chat_provider == 'gemini':
+                from langchain_google_genai import ChatGoogleGenerativeAI
+                print(f"[CHAT LLM INIT] Creating Gemini instance: model={chat_model}", flush=True)
+                GLOBAL_STATE['chat_llm'] = ChatGoogleGenerativeAI(
+                    model=chat_model,
+                    google_api_key=chat_api_key,
+                    generation_config={"temperature": 0.6},
+                    convert_system_message_to_human=True
+                )
+                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Gemini ({chat_model})", flush=True)
+            elif chat_provider == 'anthropic':
+                from langchain_anthropic import ChatAnthropic
+                print(f"[CHAT LLM INIT] Creating Anthropic instance: model={chat_model}", flush=True)
+                GLOBAL_STATE['chat_llm'] = ChatAnthropic(
+                    model=chat_model,
+                    api_key=chat_api_key,
+                    temperature=0.6
+                )
+                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Anthropic ({chat_model})", flush=True)
+            else:
+                print(f"[CHAT LLM INIT] ✗ Unknown chat provider: {chat_provider}. Using shared LLM for chat.", flush=True)
+                GLOBAL_STATE['chat_llm'] = None  # Will fallback to main LLM
+        except Exception as e:
+            print(f"[CHAT LLM INIT] ✗ Error initializing separate Chat LLM: {e}. Using shared LLM for chat.", flush=True)
+            traceback.print_exc()
+            GLOBAL_STATE['chat_llm'] = None
+    else:
+        print("[CHAT LLM INIT] Using shared LLM for both execution and chat.", flush=True)
+        GLOBAL_STATE['chat_llm'] = None  # Will fallback to main LLM in process_chat_message
+
 # ---
 # --- Rute Flask (Pagini Principale) ---
 # ---
@@ -415,6 +467,15 @@ def history():
 def get_agent_config():
     """Returneaza configuratia agentului."""
     cfg = get_config()
+
+    # Load Chat LLM configuration if exists
+    chat_llm_config = {
+        'enabled': cfg.getboolean('ChatLLM', 'enabled', fallback=False),
+        'provider': cfg.get('ChatLLM', 'provider', fallback='ollama'),
+        'model_name': cfg.get('ChatLLM', 'model_name', fallback=''),
+        'api_key': cfg.get('ChatLLM', 'api_key', fallback='')
+    }
+
     return jsonify({
         'provider': cfg.get('General', 'provider', fallback='ollama'),
         'model_name': cfg.get('Agent', 'model_name', fallback=''),
@@ -424,7 +485,8 @@ def get_agent_config():
         'max_steps': cfg.getint('Agent', 'max_steps', fallback=50),
         'summarization_threshold': cfg.getint('Agent', 'summarization_threshold', fallback=15000),
         'llm_timeout': cfg.getint('Agent', 'llm_timeout', fallback=120),
-        'chat_history_message_count': cfg.getint('Agent', 'chat_history_message_count', fallback=20)
+        'chat_history_message_count': cfg.getint('Agent', 'chat_history_message_count', fallback=20),
+        'chat_llm': chat_llm_config
     })
 
 @app.route('/save_agent_config', methods=['POST'])
@@ -433,7 +495,7 @@ def save_agent_config():
     try:
         data = request.json
         cfg = get_config()
-        
+
         cfg.set('General', 'provider', data['provider'])
         cfg.set('General', 'gemini_api_key', data.get('gemini_api_key', ''))
         cfg.set('General', 'anthropic_api_key', data.get('anthropic_api_key', ''))
@@ -443,14 +505,24 @@ def save_agent_config():
         cfg.set('Agent', 'llm_timeout', str(data.get('llm_timeout', 120)))
         cfg.set('Agent', 'chat_history_message_count', str(data.get('chat_history_message_count', 20)))
         cfg.set('Ollama', 'api_url', data.get('ollama_api_url', ''))
-        
+
+        # Save Chat LLM Configuration
+        if 'chat_llm' in data:
+            if not cfg.has_section('ChatLLM'):
+                cfg.add_section('ChatLLM')
+            chat_llm = data['chat_llm']
+            cfg.set('ChatLLM', 'enabled', str(chat_llm.get('enabled', False)))
+            cfg.set('ChatLLM', 'provider', chat_llm.get('provider', 'ollama'))
+            cfg.set('ChatLLM', 'model_name', chat_llm.get('model_name', ''))
+            cfg.set('ChatLLM', 'api_key', chat_llm.get('api_key', ''))
+
         with open(CONFIG_FILE_PATH, 'w') as f:
             cfg.write(f)
-        
+
         # Re-testam conexiunea
         initialize_llm_status()
         socketio.emit('llm_status_update', GLOBAL_STATE['llm_connection_status'])
-        
+
         return jsonify({'status': 'success', 'message': 'Configuration saved!'})
     except Exception as e:
         traceback.print_exc()
@@ -497,6 +569,49 @@ def test_anthropic():
     except Exception as e:
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': str(e), 'models': []}), 500
+
+@app.route('/get_models', methods=['POST'])
+def get_models_route():
+    """Fetches available models for the specified provider using API key from UI."""
+    try:
+        data = request.json
+        provider = data.get('provider')
+        api_key_ui = data.get('api_key')  # Key from UI input
+
+        cfg = get_config()
+        models = []
+
+        if provider == 'ollama':
+            # Use URL from main config
+            url = cfg.get('Ollama', 'api_url', fallback='http://localhost:11434')
+            success, msg, models = llm_utils.check_ollama_connection(url)
+
+        elif provider == 'gemini':
+            # Use UI key if present, else saved key
+            key = api_key_ui if api_key_ui else cfg.get('General', 'gemini_api_key', fallback='')
+            if not key:
+                return jsonify({'status': 'error', 'message': 'Missing API Key'})
+            success, msg, models = llm_utils.check_gemini_connection(key)
+
+        elif provider == 'anthropic':
+            # Use UI key if present, else saved key
+            key = api_key_ui if api_key_ui else cfg.get('General', 'anthropic_api_key', fallback='')
+            if not key:
+                return jsonify({'status': 'error', 'message': 'Missing API Key'})
+            success, msg, models = llm_utils.check_anthropic_connection(key)
+
+        else:
+            return jsonify({'status': 'error', 'message': 'Unknown provider'})
+
+        return jsonify({
+            'status': 'success' if success else 'error',
+            'models': models,
+            'message': msg
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/get_system_config')
 def get_system_config():

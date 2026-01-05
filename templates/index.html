@@ -57,44 +57,73 @@
     </div>
 
     <!-- VIEW 2: CHAT INTERFACE (New) -->
-    <div id="view-chat" class="section" style="border-top: none; display: none; flex-direction: column; height: 100%;">
+    <div id="view-chat" class="section" style="border-top: none; padding: 0;">
 
-        <!-- Chat Toolbar -->
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; gap: 10px;">
-             <!-- Left side: Action Plan Status -->
-             <button id="action-plan-status-btn" style="background: transparent; border: 1px solid #4CAF50; color: #4CAF50; padding: 4px 10px; font-size: 11px; width: auto; margin: 0; cursor: pointer; display: none;">No Active Plan</button>
+        <!-- Fixed Header (Action Plan Status + Buttons) -->
+        <div class="chat-header">
+            <div class="chat-header-title">
+                <i class="fa-solid fa-robot" style="color: #2196F3;"></i>
+                <button id="action-plan-status-btn" class="header-btn" style="font-size: 12px; padding: 4px 10px;" title="Click to view or create action plan">
+                    <i class="fa-solid fa-list-check" style="margin-right: 5px;"></i>
+                    Plan: <span id="action-plan-status-text" style="margin-left: 3px;">No active plan</span>
+                </button>
+                <span id="chat-typing-indicator" style="display:none; color: #4CAF50; font-size: 12px; margin-left: 10px;">
+                    <i class="fa-solid fa-circle-notch fa-spin"></i> Thinking...
+                </span>
+            </div>
 
-             <!-- Right side: Clear Chat and Fullscreen -->
-             <div style="display: flex; gap: 10px; align-items: center;">
-                 <label style="font-size: 12px; color: #aaa; display: flex; align-items: center; gap: 5px; cursor: pointer; margin-right: 5px;">
-                     <input type="checkbox" id="auto-accept-tasks-checkbox"> Auto-Accept Tasks
-                 </label>
-                 <button id="clear-chat-btn" style="background: transparent; border: 1px solid #c0392b; color: #c0392b; padding: 2px 8px; font-size: 12px; width: auto; margin: 0; cursor: pointer;">Clear Chat</button>
-                 <button id="chat-fullscreen-btn" style="background: transparent; border: 1px solid #444; color: #aaa; padding: 2px 8px; font-size: 12px; width: auto; margin: 0; cursor: pointer;">&#x26F6; Fullscreen</button>
-             </div>
-        </div>
-
-        <div id="chat-history" style="flex-grow: 1; background-color: #1e1e1e; border: 1px solid #444; border-radius: 4px; padding: 10px; overflow-y: auto; margin-bottom: 10px; min-height: 200px;">
-            <div id="chat-greeting" style="color: #666; text-align: center; margin-top: 20px;">
-                <p>Chat with the agent about executed tasks.</p>
+            <div class="chat-header-actions">
+                <label class="header-btn" style="cursor: pointer; display: flex; align-items: center; gap: 5px;" title="Automatically accept task proposals from chat">
+                    <input type="checkbox" id="auto-accept-tasks-checkbox" style="margin: 0;">
+                    <span>Auto-Accept</span>
+                </label>
+                <button class="header-btn" id="clear-chat-btn" title="Clear Chat History">
+                    <i class="fa-solid fa-trash"></i> Clear
+                </button>
+                <button class="header-btn" id="chat-fullscreen-btn" title="Toggle Fullscreen">
+                    <i class="fa-solid fa-expand"></i> Fullscreen
+                </button>
             </div>
         </div>
 
-        <!-- Task Proposal Area (Hidden by default) -->
-        <div id="task-proposal-area" style="display: none; background-color: #2d2d30; border: 1px solid #f39c12; padding: 10px; margin-bottom: 10px; border-radius: 4px;">
-            <strong style="color: #f39c12;">Task Proposal:</strong>
-            <p id="proposal-text" style="margin: 5px 0; color: white;">Agent wants to...</p>
-            <div style="display: flex; gap: 10px;">
-                <button id="accept-proposal-btn" style="background-color: #4CAF50; padding: 5px;">Set Objective & Go to Execute</button>
-                <button id="reject-proposal-btn" style="background-color: #c0392b; padding: 5px;">Cancel</button>
+        <!-- Chat History Container (Scrollable, fills remaining space) -->
+        <div id="chat-history-container">
+            <div id="chat-history">
+                <div id="chat-greeting" style="color: #666; text-align: center; margin-top: 20px;">
+                    <p>Chat with the agent about executed tasks.</p>
+                </div>
+            </div>
+
+            <!-- Task Proposal Area (Hidden by default) -->
+            <div id="task-proposal-area" style="display: none; background-color: #2d2d30; border: 1px solid #f39c12; padding: 10px; margin-top: 10px; border-radius: 4px;">
+                <strong style="color: #f39c12;">Task Proposal:</strong>
+                <p id="proposal-text" style="margin: 5px 0; color: white;">Agent wants to...</p>
+                <div style="display: flex; gap: 10px;">
+                    <button id="accept-proposal-btn" style="background-color: #4CAF50; padding: 5px;">Set Objective & Go to Execute</button>
+                    <button id="reject-proposal-btn" style="background-color: #c0392b; padding: 5px;">Cancel</button>
+                </div>
             </div>
         </div>
 
-        <div style="display: flex; gap: 10px; align-items: flex-end;">
-            <textarea id="chat-input" placeholder="Type your message... (Shift+Enter for new line)" rows="1"></textarea>
-            <button id="send-chat-btn" style="width: auto; padding: 10px 20px; margin: 0; height: 50px;">Send</button>
+        <!-- Draggable Resizer Handle -->
+        <div id="chat-resizer-handle">
+            <div class="resizer-grip"></div>
         </div>
-        <div id="chat-status" style="height: 20px; color: #aaa; font-size: 0.8em; padding-top: 5px;"></div>
+
+        <!-- Input Container (Resizable) -->
+        <div id="chat-input-container">
+            <!-- Input Wrapper (Textarea + Button Container) -->
+            <div class="chat-input-wrapper">
+                <textarea id="chat-input" placeholder="Type your message... (Drag bar above to resize)"></textarea>
+
+                <div class="chat-btn-container">
+                    <button id="send-chat-btn">
+                        <i class="fa-solid fa-paper-plane"></i> Send
+                    </button>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <!-- LOG SECTION (Shared) -->
@@ -713,7 +742,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const chatInput = document.getElementById('chat-input');
     const sendChatBtn = document.getElementById('send-chat-btn');
     const chatHistory = document.getElementById('chat-history');
-    const chatStatus = document.getElementById('chat-status');
+    const chatHistoryContainer = document.getElementById('chat-history-container');
+    const chatTypingIndicator = document.getElementById('chat-typing-indicator');
     const clearChatBtn = document.getElementById('clear-chat-btn');
     const chatFullscreenBtn = document.getElementById('chat-fullscreen-btn');
     const mainLeftColumn = document.getElementById('main-left-column');
@@ -725,6 +755,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let isChatFullscreen = false;
     // Note: isTaskFromChat and wasChatFullscreen now use sessionStorage for persistence
+
+    // --- Helper: Toggle Log Section Visibility ---
+    function toggleLogVisibility(shouldShow) {
+        const logTextarea = document.getElementById('log-textarea');
+        if (!logTextarea) return;
+
+        // Find parent .section container
+        const logSection = logTextarea.closest('.section');
+        if (logSection) {
+            logSection.style.display = shouldShow ? 'flex' : 'none';
+        }
+    }
 
     // --- 1. Tab Switching ---
     window.switchTab = function(tab) {
@@ -739,31 +781,92 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('view-execution').style.display = tab === 'execution' ? 'flex' : 'none';
         document.getElementById('view-chat').style.display = tab === 'chat' ? 'flex' : 'none';
 
+        // Toggle Log Visibility (Hide in Chat, Show in Execution)
+        if (tab === 'chat') {
+            toggleLogVisibility(false); // Hide log to maximize chat space
+        } else {
+            toggleLogVisibility(true); // Show log for execution monitoring
+        }
+
         // --- FIX: Auto-scroll to bottom when switching to Chat ---
         if (tab === 'chat') {
             setTimeout(() => {
-                const chatHistory = document.getElementById('chat-history');
-                if (chatHistory) {
-                    chatHistory.scrollTop = chatHistory.scrollHeight;
+                const container = document.getElementById('chat-history-container');
+                if (container) {
+                    container.scrollTop = container.scrollHeight;
                 }
-            }, 10); // Small delay to ensure DOM is rendered
+            }, 100); // Small delay to ensure DOM is rendered
         }
     };
     tabExecution.onclick = () => switchTab('execution');
     tabChat.onclick = () => switchTab('chat');
 
+    // --- CHAT RESIZER LOGIC ---
+    const resizerHandle = document.getElementById('chat-resizer-handle');
+    const inputContainer = document.getElementById('chat-input-container');
+
+    // Variables to track drag state
+    let isResizing = false;
+    let startY = 0;
+    let startHeight = 0;
+
+    if (resizerHandle && inputContainer) {
+        resizerHandle.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            startY = e.clientY;
+            startHeight = parseInt(window.getComputedStyle(inputContainer).height, 10);
+
+            // Visual feedback
+            resizerHandle.classList.add('dragging');
+            document.body.style.cursor = 'row-resize';
+
+            // Prevent text selection while dragging
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            // Calculate delta (Movement UP means delta is negative, so we add to height)
+            // If we move Mouse UP (lower Y), the Input Height should INCREASE.
+            const delta = startY - e.clientY;
+            const newHeight = startHeight + delta;
+
+            // Apply new height (CSS min/max-height will constrain it automatically)
+            inputContainer.style.height = `${newHeight}px`;
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                resizerHandle.classList.remove('dragging');
+                document.body.style.cursor = 'default';
+            }
+        });
+    }
+
     // --- 2. Fullscreen Logic ---
     function toggleFullscreen() {
         isChatFullscreen = !isChatFullscreen;
+        const icon = chatFullscreenBtn.querySelector('i');
+
         if (isChatFullscreen) {
             mainLeftColumn.classList.add('fullscreen-chat-mode');
-            chatFullscreenBtn.innerHTML = "&#x2715; Exit Fullscreen";
-            chatFullscreenBtn.style.color = "#f39c12";
+
+            // Update icon and text
+            if (icon) {
+                icon.className = 'fa-solid fa-compress';
+            }
+            chatFullscreenBtn.innerHTML = '<i class="fa-solid fa-compress"></i> Exit';
             chatFullscreenBtn.style.borderColor = "#f39c12";
         } else {
             mainLeftColumn.classList.remove('fullscreen-chat-mode');
-            chatFullscreenBtn.innerHTML = "&#x26F6; Fullscreen";
-            chatFullscreenBtn.style.color = "#aaa";
+
+            // Update icon and text
+            if (icon) {
+                icon.className = 'fa-solid fa-expand';
+            }
+            chatFullscreenBtn.innerHTML = '<i class="fa-solid fa-expand"></i> Fullscreen';
             chatFullscreenBtn.style.borderColor = "#444";
         }
     }
@@ -794,7 +897,11 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         chatHistory.appendChild(div);
-        chatHistory.scrollTop = chatHistory.scrollHeight;
+
+        // Auto-scroll to bottom of the scrollable container
+        setTimeout(() => {
+            chatHistoryContainer.scrollTop = chatHistoryContainer.scrollHeight;
+        }, 50);
     }
 
     // --- Updated Input Logic (Textarea) ---
@@ -820,7 +927,10 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.on('chat_response', (data) => addChatMessage(data.role, data.content));
 
     socket.on('chat_status', (data) => {
-        chatStatus.textContent = (data.status === 'thinking') ? "Agent is thinking..." : "";
+        // Show/hide typing indicator in header
+        if (chatTypingIndicator) {
+            chatTypingIndicator.style.display = (data.status === 'thinking') ? 'inline' : 'none';
+        }
     });
 
     // --- 4. Persistent History Restoration ---
@@ -849,8 +959,9 @@ document.addEventListener('DOMContentLoaded', () => {
         chatHistory.innerHTML = '<div id="chat-greeting" style="color: #666; text-align: center; margin-top: 20px;"><p>Chat with the agent about executed tasks.</p></div>';
     });
 
-    // --- 6. Action Plan Status Button & Modal ---
+    // --- 6. Action Plan Status & Modal ---
     const actionPlanBtn = document.getElementById('action-plan-status-btn');
+    const actionPlanText = document.getElementById('action-plan-status-text');
     const actionPlanModal = document.getElementById('action-plan-modal');
     const actionPlanOverlay = document.getElementById('action-plan-modal-overlay');
     const actionPlanContent = document.getElementById('action-plan-content');
@@ -859,28 +970,39 @@ document.addEventListener('DOMContentLoaded', () => {
     let isPlanEditMode = false;
     let currentPlanData = null;
 
-    // Function to update action plan status button
+    // Function to update action plan status text
     function updateActionPlanButton(planData) {
-        // Always show button so user can create plan from zero
-        actionPlanBtn.style.display = 'block';
-
         if (!planData || !planData.exists) {
-            actionPlanBtn.textContent = 'Action Plan (None)';
-            actionPlanBtn.style.borderColor = '#666';
-            actionPlanBtn.style.color = '#666';
+            actionPlanText.textContent = 'No active plan';
+            actionPlanText.style.color = '#888';
             return;
         }
 
-        // Update button text with current progress
+        // Update text with current progress
         if (planData.next_step_index) {
-            actionPlanBtn.textContent = `AP: Step ${planData.next_step_index}/${planData.total_steps} in progress...`;
-            actionPlanBtn.style.borderColor = '#f39c12';
-            actionPlanBtn.style.color = '#f39c12';
+            actionPlanText.textContent = `Step ${planData.next_step_index}/${planData.total_steps} in progress...`;
+            actionPlanText.style.color = '#f39c12';
         } else {
-            actionPlanBtn.textContent = `AP: All ${planData.total_steps} steps completed ✓`;
-            actionPlanBtn.style.borderColor = '#4CAF50';
-            actionPlanBtn.style.color = '#4CAF50';
+            actionPlanText.textContent = `All ${planData.total_steps} steps completed ✓`;
+            actionPlanText.style.color = '#4CAF50';
         }
+    }
+
+    // Make action plan button clickable to open modal
+    if (actionPlanBtn) {
+        actionPlanBtn.addEventListener('click', () => {
+            // Fetch current plan and open modal
+            fetch('/get_action_plan')
+                .then(res => res.json())
+                .then(data => {
+                    displayActionPlan(data);
+                    // Show modal using the standard openModal function
+                    openModal('action-plan');
+                })
+                .catch(err => {
+                    console.error('Error fetching action plan:', err);
+                });
+        });
     }
 
     // Function to format and display action plan in modal

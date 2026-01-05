@@ -881,8 +881,19 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
                     if current_allow_ask_mode:
                         ask_match = re.search(r"ASK:\s*(.*)", llm_response, re.DOTALL | re.IGNORECASE)
                     srch_match = re.search(r"SRCH:\s*(.*)", llm_response, re.DOTALL | re.IGNORECASE)
-                    command_match = re.search(r"COMMAND:\s*(.*)", llm_response, re.DOTALL | re.IGNORECASE)
-                    write_match = re.search(r"WRITE_FILE:\s*(.*?)\nCONTENT:\s*\n(.*?)END_CONTENT", llm_response, re.DOTALL | re.IGNORECASE)
+                    # IMPROVED: Non-greedy regex that stops at reserved keywords to prevent TIMEOUT/REASON from being included in the command
+                    command_match = re.search(
+                        r'COMMAND:\s*(.*?)(?=\n(?:REASON|TIMEOUT|REPORT|ASK|SRCH|WRITE_FILE|END_CONTENT)|$)',
+                        llm_response,
+                        re.DOTALL | re.IGNORECASE
+                    )
+                    # IMPROVED: WRITE_FILE regex that skips any REASON/other text between path and CONTENT marker
+                    # Captures: (1) file path, (2) content strictly up to END_CONTENT
+                    write_match = re.search(
+                        r'WRITE_FILE:\s*(.*?)\n.*?CONTENT:\s*\n(.*?)END_CONTENT',
+                        llm_response,
+                        re.DOTALL | re.IGNORECASE
+                    )
                     timeout_match = re.search(r"TIMEOUT:\s*(\d+)", llm_response, re.IGNORECASE)
 
                     # Updated check (timeout alone is not an action, but we parse it here)
@@ -1185,7 +1196,16 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
 
             # --- CAZUL 5: COMMAND (Executie SSH) ---
             elif command_match:
-                raw_cmd = command_match.group(1).strip().split('\n')[0].strip()
+                raw_cmd = command_match.group(1).strip()
+
+                # DEFENSIVE SANITIZATION: Line-by-line check to catch edge cases
+                # Stop at first line that starts with a reserved keyword
+                sanitized_lines = []
+                for line in raw_cmd.split('\n'):
+                    if re.match(r'^(REASON|REPORT|ASK|SRCH|TIMEOUT|WRITE_FILE):', line.strip(), re.IGNORECASE):
+                        break  # Stop processing at keyword
+                    sanitized_lines.append(line)
+                raw_cmd = '\n'.join(sanitized_lines).strip()
 
                 # Apply cleaning to remove Markdown/Quotes artifacts
                 command_to_execute = clean_command_string(raw_cmd)
@@ -1508,19 +1528,33 @@ def process_chat_message(socketio, global_state, user_message):
         if log_manager:
             log_manager.log_chat_message('user', user_message)
 
-        # 1. Init LLM
-        llm = None
-        if provider == 'ollama':
-            api_url = cfg.get('Ollama', 'api_url', fallback='')
-            llm = Ollama(model=model_name, base_url=api_url, timeout=120)
-        elif provider == 'gemini':
-            api_key = cfg.get('General', 'gemini_api_key', fallback='')
-            llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, generation_config={"temperature": 0.6})
-        elif provider == 'anthropic':
-            api_key = cfg.get('General', 'anthropic_api_key', fallback='')
-            llm = ChatAnthropic(model=model_name, api_key=api_key, temperature=0.6)
+        # 1. Select LLM (Use separate chat LLM if configured, otherwise use execution LLM)
+        llm = global_state.get('chat_llm')
+
+        if llm is None:
+            # Fallback to execution LLM if separate chat LLM not configured
+            print("[CHAT] Chat LLM not configured separately. Using execution LLM for chat.", flush=True)
+            if provider == 'ollama':
+                api_url = cfg.get('Ollama', 'api_url', fallback='')
+                print(f"[CHAT] Creating Ollama execution LLM: model={model_name}, url={api_url}", flush=True)
+                llm = Ollama(model=model_name, base_url=api_url, timeout=120)
+            elif provider == 'gemini':
+                api_key = cfg.get('General', 'gemini_api_key', fallback='')
+                print(f"[CHAT] Creating Gemini execution LLM: model={model_name}", flush=True)
+                llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, generation_config={"temperature": 0.6})
+            elif provider == 'anthropic':
+                api_key = cfg.get('General', 'anthropic_api_key', fallback='')
+                print(f"[CHAT] Creating Anthropic execution LLM: model={model_name}", flush=True)
+                llm = ChatAnthropic(model=model_name, api_key=api_key, temperature=0.6)
+        else:
+            # Get the model name from the Chat LLM config
+            chat_cfg = get_config()
+            chat_provider = chat_cfg.get('ChatLLM', 'provider', fallback='ollama')
+            chat_model = chat_cfg.get('ChatLLM', 'model_name', fallback='unknown')
+            print(f"[CHAT] ✓ Using separate Chat LLM: provider={chat_provider}, model={chat_model}", flush=True)
 
         if not llm:
+            print("[CHAT] ✗ Error: LLM not configured.", flush=True)
             socketio.emit('chat_response', {'role': 'assistant', 'content': 'Error: LLM not configured.'})
             return
 
