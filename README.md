@@ -4,6 +4,11 @@ AI-powered autonomous agent for executing commands on remote systems via SSH. Th
 
 ## Features
 
+- **Dual LLM Configuration**: Configure separate models for Chat and Execution
+  - **Chat LLM**: Optimized for conversational interactions
+  - **Execution LLM**: Specialized for command generation and task execution
+  - Independent provider selection (Ollama, Gemini, or Anthropic)
+  - Model selection per LLM with live model fetching
 - **Multiple LLM Support**: Works with Ollama (local), Google Gemini, or Anthropic Claude
 - **Autonomous Execution**: Agent independently generates and executes commands
 - **Execution Modes**:
@@ -20,12 +25,20 @@ AI-powered autonomous agent for executing commands on remote systems via SSH. Th
   - Auto-accept tasks or manual approval
   - Action plans with multi-step workflows
   - Search execution history from chat
+  - Draggable resizer for input area
+  - Auto-scroll to latest messages
 - **Modern Web Interface**:
   - Real-time execution monitoring
   - Fullscreen modes for Log, Screen, and Chat
   - Dedicated status bar for command execution
   - Modal configuration dialogs
   - Tabbed navigation (Execution / Chat)
+  - Uniform config chip design with dual-model display
+- **Prompt Management**:
+  - **Import/Export**: Backup and restore all prompts as ZIP archive
+  - Individual text files for each prompt category
+  - Share prompt configurations across instances
+  - Quick restore to known-good prompts
 - **Persistent Memory**: Agent maintains context across sessions
 - **History Summarization**: Automatic context compression when threshold exceeded
 
@@ -87,15 +100,31 @@ docker run -d --name agent-app -p 5000:5000 \
 
 ### Pre-Built Prompts (Optional)
 
-The repository includes a **GOOD_PROMPTS/** directory containing production-tested, optimized prompt templates:
+The repository includes a **GOOD_PROMPTS/** directory containing production-tested, optimized prompt templates for all prompt categories:
 
-- ✅ **Without ASK.txt** - Standard task execution prompts
-- ✅ **With ASK.txt** - Execution prompts with human interaction capability
-- ✅ **Chat.txt** - Conversational chat interface prompt
-- ✅ **Validator.txt** - Command validation and safety checks
-- ✅ **Summarisation.txt** - History compression prompts
-- ✅ **Step Summarisation.txt** - Large output summarization
-- ✅ **Search Summarisation.txt** - Search results analysis
+**Execution Prompts:**
+- ✅ **OllamaPrompt.txt** - Standard task execution for Ollama models
+- ✅ **CloudPrompt.txt** - Standard task execution for Gemini/Anthropic
+- ✅ **OllamaPromptWithAsk.txt** - Execution with human interaction (Ollama)
+- ✅ **CloudPromptWithAsk.txt** - Execution with human interaction (Cloud)
+
+**Chat Interface:**
+- ✅ **ChatPrompt.txt** - Conversational chat interface prompt with action plan support
+
+**Validation:**
+- ✅ **OllamaValidatePrompt.txt** - Command safety validation (Ollama)
+- ✅ **CloudValidatePrompt.txt** - Command safety validation (Cloud)
+
+**Summarization:**
+- ✅ **OllamaSummarizePrompt.txt** - History compression (Ollama)
+- ✅ **CloudSummarizePrompt.txt** - History compression (Cloud)
+- ✅ **OllamaStepSummaryPrompt.txt** - Large output summarization (Ollama)
+- ✅ **CloudStepSummaryPrompt.txt** - Large output summarization (Cloud)
+- ✅ **OllamaSearchSummaryPrompt.txt** - Search results analysis (Ollama)
+- ✅ **CloudSearchSummaryPrompt.txt** - Search results analysis (Cloud)
+
+**Complete Archive:**
+- 📦 **prompts_export_YYYYMMDD_HHMMSS.zip** - All prompts in one ZIP file
 
 These prompts have been thoroughly tested and embody best practices for:
 - Methodical system administration
@@ -103,13 +132,23 @@ These prompts have been thoroughly tested and embody best practices for:
 - Efficient debugging
 - Clear failure reporting
 - Natural conversational flow
+- Action plan management
 
-**To use these prompts:**
+**To use these prompts (Option 1 - Import All at Once):**
+1. Open the web interface at `http://localhost:5000`
+2. Click the **"Prompts I/E"** card in the settings bar
+3. Click **"Export All Prompts"** to backup your current prompts (recommended)
+4. In the Import section, select the `prompts_export_*.zip` file from `GOOD_PROMPTS/`
+5. Click **"Import Prompts from ZIP"**
+6. All 13 prompts will be imported automatically
+
+**To use these prompts (Option 2 - Manual Individual Import):**
 1. Open the web interface at `http://localhost:5000`
 2. Click the **Prompt Editor** card in the settings bar
 3. Copy the content from the desired `.txt` file in `GOOD_PROMPTS/`
 4. Paste into the appropriate prompt field (Ollama or Cloud)
 5. Click **Save Templates**
+6. Repeat for other prompt categories using their dedicated modals
 
 **Note:** These are optional. The application will work with default prompts, but these pre-built templates provide enhanced performance and better agent behavior.
 
@@ -124,12 +163,18 @@ All configuration is done through the **web interface** - no need to manually ed
 3. Configure each section by clicking on the cards:
 
    **Agent & LLM Configuration** (click the card):
-   - Select LLM Provider (Ollama, Gemini, or Anthropic)
-   - Enter API Key (for Gemini/Anthropic)
-   - Click **Fetch Models** to load available models from your provider
-   - Choose model from dropdown (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`, `The best for local Ollama is gpt-oss:20b`)
+   - **Execution LLM**: Configure the model for task execution
+     - Select LLM Provider (Ollama, Gemini, or Anthropic)
+     - Enter API Key (for Gemini/Anthropic)
+     - Click **Fetch Models** to load available models from your provider
+     - Choose model from dropdown (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`)
+   - **Chat LLM** (Optional): Configure a separate model for chat interactions
+     - Enable separate Chat LLM or use same as Execution
+     - Select provider and model independently
+     - Optimized models: `gpt-oss-optimizat-24k:latest` for local Ollama
    - Set max steps, timeouts, and summarization threshold
    - Click **Save Agent Config** to apply
+   - The status bar displays both models: **Exec:** provider (model) | **Chat:** provider (model)
 
    **Remote System Connection** (click the card):
    - Enter target system IP address
@@ -138,7 +183,16 @@ All configuration is done through the **web interface** - no need to manually ed
    - Configure SSH key path ... enter the password for automatic deploy and press Deploy
    - Click **Save & Test Connection** to apply and verify connectivity
 
-   
+   **Prompts I/E** (Import/Export - click the card):
+   - **Export**: Download all current prompts as a timestamped ZIP archive
+     - Contains 13 individual .txt files (one per prompt category)
+     - Useful for backup, version control, or sharing configurations
+   - **Import**: Upload a ZIP archive to restore prompts
+     - Validates file format and updates all prompts automatically
+     - Shows success message with count of imported prompts
+     - Great for restoring from GOOD_PROMPTS or previous backups
+
+
 ### SSH Key Setup
 
 The application handles SSH key generation and deployment automatically:
@@ -419,7 +473,8 @@ You can use these as-is or customize them to match your specific use cases.
 
 **Navigation Bar:**
 - Execution / Chat / History & Reports tabs
-- Settings cards (Agent Config, System Config, Prompts)
+- Settings cards (Agent & LLM Config, Remote System, Prompts I/E, Prompt Editor, Summarization, Validator)
+- Dual-model display showing both Execution and Chat LLM configurations
 - Save/Load session buttons
 
 **Execution Tab:**
@@ -432,11 +487,13 @@ You can use these as-is or customize them to match your specific use cases.
 - **Fullscreen Toggles:** ⛶ buttons for Log and Screen panels
 
 **Chat Tab:**
-- **Chat History:** Conversational interface with the agent
-- **Chat Input:** Natural language input field
-- **Action Plan Status:** Visual indicator showing current step progress
+- **Fixed Header:** Action plan button, Auto-Accept toggle, Clear, Fullscreen
+- **Chat History:** Conversational interface with the agent (auto-scrolls to latest)
+- **Draggable Resizer:** Adjust input area height by dragging the handle
+- **Chat Input:** Multi-line textarea for natural language input
+- **Action Plan Button:** Click to view/create action plans (shows step progress)
 - **Auto-Accept Tasks:** Toggle for automatic task approval
-- **Chat Controls:** Clear chat, fullscreen mode
+- **Chat Controls:** Clear chat history, fullscreen mode
 
 **History & Reports Tab:**
 - **Agent Memory Editor:** Edit LLM working context

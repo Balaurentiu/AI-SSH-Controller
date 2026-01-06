@@ -1,0 +1,3 @@
+Your task is to create a concise summary of this output. The summary MUST be short but MUST preserve the most critical information and also provide a few original lines as sample:
+
+{output}
