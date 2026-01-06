@@ -351,6 +351,12 @@
             </div>
             <div class="config-chip-detail" id="system-summary">{{ ssh_status.message }}</div>
         </div>
+        <div id="prompts-io-trigger" class="config-chip">
+            <div class="config-chip-title">
+                <i class="fa-solid fa-file-export"></i> Prompts I/E
+            </div>
+            <div class="config-chip-detail">Import/Export all prompt templates</div>
+        </div>
         <div id="prompt-editor-trigger" class="config-chip">
             <div class="config-chip-title">
                 <i class="fa-solid fa-file-code"></i> Prompt Editor
@@ -569,6 +575,52 @@
     
     <div id="system-modal-overlay" class="modal-overlay"></div>
     <div id="system-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="system">&times;</span> <h2>Remote System Connection</h2> <div style="display: flex; gap: 20px; align-items: flex-start;"> <div style="flex: 1;"> <h3 style="margin-top: 0; font-size: 16px; color: #7aa5d2;">Saved Connections</h3> <select id="saved-connections-select" size="6" style="width: 100%; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; padding: 5px; font-family: monospace; min-height: 150px;"> <option value="">-- No saved connections --</option> </select> <div style="display: flex; gap: 10px; margin-top: 10px;"> <button id="load-connection-btn" style="background-color: #0e639c;">Load</button> <button id="delete-connection-btn">Delete</button> </div> </div> <div style="flex: 2;"> <fieldset class="modal-fieldset"> <div class="settings-item"> <label for="system-ip">System IP:</label> <div id="system-ip-status" class="status-label"></div> <input type="text" id="system-ip" placeholder="192.168.1.100"> </div> <div class="settings-item"> <label for="system-username">Username:</label> <input type="text" id="system-username" placeholder="root"> </div> <div class="settings-item"> <label for="ssh-port">SSH Port:</label> <input type="number" id="ssh-port" placeholder="22" value="22" min="1" max="65535"> </div> <div class="settings-item full-width"> <label for="ssh-key-path">SSH Key Path:</label> <input type="text" id="ssh-key-path" placeholder="/app/keys/id_rsa" readonly style="background-color: #333;"> </div> <div class="settings-item full-width with-button"> <div> <label for="deployment-password">Password (for key deployment):</label> <div id="deployment-status" class="status-label"></div> <input type="password" id="deployment-password" placeholder="Enter password to deploy SSH key"> </div> <button id="deploy-key-btn" style="background-color: #e67e22;">Deploy Key</button> </div> </fieldset> <button id="save-system-btn">Save & Test Connection</button> </div> </div> <div id="deploy-log-area" style="display: none; margin-top: 15px;"> <h3 style="font-size: 14px; color: #7aa5d2; margin-bottom: 10px;">Key Deployment Log</h3> <textarea id="deploy-log-textarea" readonly style="width: 100%; height: 100px; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; padding: 5px; font-family: monospace; font-size: 12px;"></textarea> </div> </div>
+
+    <!-- Prompts Import/Export Modal -->
+    <div id="prompts-io-modal-overlay" class="modal-overlay"></div>
+    <div id="prompts-io-modal" class="modal-content" style="min-width: 500px; max-width: 700px;">
+        <span class="modal-close-btn" data-modal-id="prompts-io">&times;</span>
+        <h2>Import/Export Prompts</h2>
+
+        <p style="color: #aaa; font-size: 14px; margin-bottom: 20px;">
+            Export all prompts to a ZIP archive or import prompts from a previously saved ZIP file.
+        </p>
+
+        <!-- Export Section -->
+        <fieldset class="modal-fieldset">
+            <legend style="color: #7aa5d2; font-weight: bold;">Export Prompts</legend>
+            <p style="color: #999; font-size: 13px; margin-bottom: 15px;">
+                Download all current prompt templates as a ZIP archive containing individual text files.
+            </p>
+            <button id="export-prompts-btn" style="background-color: #27ae60; width: 100%; padding: 12px;">
+                <i class="fa-solid fa-download"></i> Export All Prompts
+            </button>
+        </fieldset>
+
+        <!-- Import Section -->
+        <fieldset class="modal-fieldset" style="margin-top: 20px;">
+            <legend style="color: #7aa5d2; font-weight: bold;">Import Prompts</legend>
+            <p style="color: #999; font-size: 13px; margin-bottom: 15px;">
+                Upload a ZIP archive to replace current prompts. Each .txt file will update the corresponding prompt template.
+            </p>
+            <div style="margin-bottom: 15px;">
+                <label for="import-prompts-file" style="display: block; color: #aaa; margin-bottom: 8px;">
+                    Select ZIP file:
+                </label>
+                <input type="file" id="import-prompts-file" accept=".zip"
+                       style="width: 100%; padding: 8px; background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #555; border-radius: 4px; cursor: pointer;">
+            </div>
+            <button id="import-prompts-btn" style="background-color: #3498db; width: 100%; padding: 12px;">
+                <i class="fa-solid fa-upload"></i> Import Prompts from ZIP
+            </button>
+        </fieldset>
+
+        <!-- Status Message -->
+        <div id="prompts-io-status" style="margin-top: 20px; padding: 10px; border-radius: 4px; display: none;">
+            <span id="prompts-io-status-text"></span>
+        </div>
+    </div>
+
     <div id="prompt-editor-modal-overlay" class="modal-overlay"></div>
     <div id="prompt-editor-modal" class="modal-content"> <span class="modal-close-btn" data-modal-id="prompt-editor">&times;</span> <h2>Instruction Templates</h2> <div style="display: flex; gap: 10px; margin-bottom: 15px;"> <button id="standard-mode-btn" style="flex: 1; background-color: #0e639c;">Standard Mode</button> <button id="ask-mode-btn" style="flex: 1; background-color: #5c5c5c;">Ask Mode</button> <button id="chat-mode-btn" style="flex: 1; background-color: #5c5c5c;">Chat Mode</button> </div> <div class="prompt-editor-container"> <div id="execution-prompts-container" style="display: flex; gap: 20px; flex: 1;"> <div class="prompt-section"> <label for="ollama-prompt-textarea">Ollama Template</label> <textarea id="ollama-prompt-textarea"></textarea> </div> <div class="prompt-section"> <label for="cloud-prompt-textarea">Cloud Model Template</label> <textarea id="cloud-prompt-textarea"></textarea> </div> </div> <div id="chat-prompt-container" style="display: none; flex: 1;"> <div class="prompt-section"> <label for="chat-prompt-textarea">Chat Persona & Rules Template</label> <textarea id="chat-prompt-textarea"></textarea> </div> </div> </div> <div class="prompt-footer"> <p id="prompt-validation-note" class="validation-note"> Required variables: <code>{objective}</code>, <code>{history}</code>, <code>{system_info}</code><br> Required keywords: <code>COMMAND:</code>, <code>REPORT:</code> </p> <div class="footer-controls"> <span id="prompt-validation-status" style="color: #aaa; font-size: 14px;"></span> <button id="save-prompts-btn">Save Templates</button> </div> </div> </div>
     <div id="summarization-prompt-modal-overlay" class="modal-overlay"></div>
@@ -838,6 +890,7 @@ function fetchModelsForScope(scope) {
 document.addEventListener('DOMContentLoaded', () => {
     const agentTrigger = document.getElementById('agent-config-trigger');
     const systemTrigger = document.getElementById('system-config-trigger');
+    const promptsIoTrigger = document.getElementById('prompts-io-trigger');
     const promptEditorTrigger = document.getElementById('prompt-editor-trigger');
     const summarizationTrigger = document.getElementById('summarization-prompt-trigger');
     const validatorTrigger = document.getElementById('validator-prompt-trigger');
@@ -1160,6 +1213,75 @@ document.addEventListener('DOMContentLoaded', () => {
         setPromptModeUI('standard');
         loadPrompts('standard');
         openModal('prompt-editor');
+    });
+
+    // Prompts Import/Export Modal
+    promptsIoTrigger.addEventListener('click', function() {
+        openModal('prompts-io');
+    });
+
+    const exportPromptsBtn = document.getElementById('export-prompts-btn');
+    const importPromptsBtn = document.getElementById('import-prompts-btn');
+    const importPromptsFile = document.getElementById('import-prompts-file');
+    const promptsIoStatus = document.getElementById('prompts-io-status');
+    const promptsIoStatusText = document.getElementById('prompts-io-status-text');
+
+    function showPromptsIoStatus(message, isError = false) {
+        promptsIoStatus.style.display = 'block';
+        promptsIoStatus.style.backgroundColor = isError ? '#c0392b' : '#27ae60';
+        promptsIoStatus.style.border = `1px solid ${isError ? '#e74c3c' : '#2ecc71'}`;
+        promptsIoStatusText.textContent = message;
+
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+            promptsIoStatus.style.display = 'none';
+        }, 5000);
+    }
+
+    exportPromptsBtn.addEventListener('click', function() {
+        // Trigger download by navigating to export endpoint
+        window.location.href = '/export_prompts';
+        showPromptsIoStatus('Export started! Download should begin shortly.');
+    });
+
+    importPromptsBtn.addEventListener('click', function() {
+        const file = importPromptsFile.files[0];
+
+        if (!file) {
+            showPromptsIoStatus('Please select a ZIP file first.', true);
+            return;
+        }
+
+        if (!file.name.endsWith('.zip')) {
+            showPromptsIoStatus('File must be a ZIP archive.', true);
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        promptsIoStatusText.textContent = 'Importing prompts...';
+        promptsIoStatus.style.display = 'block';
+        promptsIoStatus.style.backgroundColor = '#3498db';
+        promptsIoStatus.style.border = '1px solid #5dade2';
+
+        fetch('/import_prompts', {
+            method: 'POST',
+            body: formData
+        })
+        .then(res => res.json())
+        .then(data => {
+            if (data.status === 'success') {
+                showPromptsIoStatus(data.message);
+                // Clear file input
+                importPromptsFile.value = '';
+            } else {
+                showPromptsIoStatus(data.message, true);
+            }
+        })
+        .catch(err => {
+            showPromptsIoStatus('Error importing prompts: ' + err.message, true);
+        });
     });
 
     standardModeBtn.addEventListener('click', function() {

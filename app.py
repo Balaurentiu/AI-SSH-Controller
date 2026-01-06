@@ -1264,7 +1264,122 @@ def save_validator_prompt():
     except Exception as e:
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': f'Error saving validator prompts: {e}'}), 500
-        
+
+@app.route('/export_prompts')
+def export_prompts():
+    """Export all prompts as a ZIP file containing text files for each prompt category."""
+    try:
+        cfg = get_config()
+
+        # Define all prompt sections to export
+        prompt_sections = [
+            'ChatPrompt',
+            'OllamaPrompt',
+            'CloudPrompt',
+            'OllamaPromptWithAsk',
+            'CloudPromptWithAsk',
+            'OllamaValidatePrompt',
+            'CloudValidatePrompt',
+            'OllamaSummarizePrompt',
+            'CloudSummarizePrompt',
+            'OllamaStepSummaryPrompt',
+            'CloudStepSummaryPrompt',
+            'OllamaSearchSummaryPrompt',
+            'CloudSearchSummaryPrompt'
+        ]
+
+        # Create ZIP in memory
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for section in prompt_sections:
+                if cfg.has_section(section):
+                    prompt_text = cfg.get(section, 'template', fallback='')
+                    if prompt_text:
+                        # Create text file for each prompt
+                        filename = f"{section}.txt"
+                        zip_file.writestr(filename, prompt_text)
+
+        zip_buffer.seek(0)
+
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f'prompts_export_{timestamp}.zip'
+
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=filename
+        )
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': f'Error exporting prompts: {e}'}), 500
+
+@app.route('/import_prompts', methods=['POST'])
+def import_prompts():
+    """Import prompts from a ZIP file containing text files for each prompt category."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'status': 'error', 'message': 'No file uploaded'}), 400
+
+        file = request.files['file']
+
+        if file.filename == '':
+            return jsonify({'status': 'error', 'message': 'No file selected'}), 400
+
+        if not file.filename.endswith('.zip'):
+            return jsonify({'status': 'error', 'message': 'File must be a ZIP archive'}), 400
+
+        cfg = get_config()
+        imported_count = 0
+        errors = []
+
+        # Read ZIP file
+        zip_buffer = BytesIO(file.read())
+
+        with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
+            # Get list of files in ZIP
+            file_list = zip_file.namelist()
+
+            # Process each text file
+            for filename in file_list:
+                if filename.endswith('.txt'):
+                    # Extract section name from filename (e.g., "ChatPrompt.txt" -> "ChatPrompt")
+                    section_name = filename.replace('.txt', '')
+
+                    # Read prompt content
+                    try:
+                        prompt_content = zip_file.read(filename).decode('utf-8')
+
+                        # Create section if it doesn't exist
+                        if not cfg.has_section(section_name):
+                            cfg.add_section(section_name)
+
+                        # Update prompt template
+                        cfg.set(section_name, 'template', prompt_content)
+                        imported_count += 1
+
+                    except Exception as e:
+                        errors.append(f"{filename}: {str(e)}")
+
+        if imported_count > 0:
+            # Save updated config
+            with open(CONFIG_FILE_PATH, 'w') as f:
+                cfg.write(f)
+
+            message = f'Successfully imported {imported_count} prompt(s)'
+            if errors:
+                message += f'. Errors: {"; ".join(errors)}'
+
+            return jsonify({'status': 'success', 'message': message, 'count': imported_count})
+        else:
+            return jsonify({'status': 'error', 'message': 'No valid prompt files found in ZIP'}), 400
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': f'Error importing prompts: {e}'}), 500
+
 # ---
 # --- Handler-e SocketIO (Logica in Timp Real) ---
 # ---
