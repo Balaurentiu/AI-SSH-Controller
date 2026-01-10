@@ -13,29 +13,43 @@ PUBLIC_KEY_PATH = os.path.join(KEYS_DIR, 'id_rsa.pub')
 # Global variable to track the currently active SSH client
 ACTIVE_SSH_CLIENT = None
 
+# Global variable to store detected OS type
+DETECTED_OS = None  # Will be set to 'windows', 'linux', 'macos', or None
+
 # --- Functie pentru curatarea ANSI escape sequences ---
 def strip_ansi_sequences(text):
     """
-    Sterge ANSI escape sequences si alte caractere de control din text.
-    Util pentru output-ul de la Windows care contine multe caractere de control.
+    Sterge ANSI escape sequences si artefactele specifice Windows OpenSSH (Window Title).
+    Rezolva problema aparitiei '0;C:\\WINDOWS\\system32\\conhost.exe'.
     """
-    # Pattern pentru ANSI escape sequences (CSI, OSC, etc.)
-    ansi_escape_pattern = re.compile(r'''
-        \x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])  # CSI sequences
-        |\x1B\][^\x07]*\x07                      # OSC sequences (terminated with BEL)
-        |\x1B\][^\x1B]*\x1B\\                    # OSC sequences (terminated with ST)
-        |\x1B[P^_].*?\x1B\\                      # DCS, PM, APC sequences
-        |\x9B[0-?]*[ -/]*[@-~]                   # Single-byte CSI
-        |\x9D.*?\x9C                             # Single-byte OSC
-    ''', re.VERBOSE)
+    # 1. Regex principal pentru secvente ANSI standard (CSI)
+    # Acopera culori, miscari de cursor etc.
+    ansi_csi_pattern = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
-    # Stergem ANSI sequences
-    text = ansi_escape_pattern.sub('', text)
+    # 2. Regex specific pentru Windows OSC (Operating System Command) - Window Title
+    # Windows trimite adesea: ESC ] 0 ; Titlu BEL  sau ESC ] 0 ; Titlu ESC \
+    # Acest pattern cauta secventa de start \x1B]0; si merge pana la BEL (\x07) sau ST (\x1B\\)
+    ansi_osc_pattern = re.compile(r'\x1B\]0;.*?(?:\x07|\x1B\\)', re.DOTALL)
 
-    # Stergem caracterele de control ramase (except newline, carriage return, tab)
-    text = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F-\x9F]', '', text)
+    # Aplicam curatarea in pasi
+    text = ansi_osc_pattern.sub('', text) # Scoatem titlurile intai (sunt lungi)
+    text = ansi_csi_pattern.sub('', text) # Scoatem culorile
 
-    return text
+    # 3. Curatare Fallback pentru artefacte 'orphaned'
+    # Uneori, daca buffer-ul taie secventa la mijloc, raman resturi.
+    # Filtram liniile care arata exact a artefact de conhost
+    lines = text.splitlines()
+    cleaned_lines = []
+    for line in lines:
+        clean_line = line.strip()
+        # Daca linia incepe cu '0;' si contine o cale de sistem sau conhost, e gunoi
+        if clean_line.startswith("0;") and ("conhost.exe" in clean_line or ":\\" in clean_line):
+            continue
+        # Daca linia e goala, o pastram doar daca nu suntem in mijlocul unui bloc de gunoi
+        cleaned_lines.append(line)
+
+    result = '\n'.join(cleaned_lines)
+    return result
 
 # --- CORECTIE: Functii "getter" care lipseau ---
 def get_private_key_path():
@@ -45,6 +59,44 @@ def get_private_key_path():
 def get_public_key_path():
     """Returneaza calea standard catre cheia publica."""
     return PUBLIC_KEY_PATH
+
+def set_detected_os(os_type):
+    """
+    Sets the detected OS type for proper PTY handling.
+
+    Args:
+        os_type (str): OS type string from detection. Can be:
+            - "Linux"
+            - "Windows (or non-Unix)"
+            - "Windows"
+            - "macOS"
+            - "Darwin"
+            - Or any other format
+
+    This function normalizes the OS type to: 'windows', 'linux', 'macos', or None
+    """
+    global DETECTED_OS
+
+    if not os_type:
+        DETECTED_OS = None
+        return
+
+    os_lower = os_type.lower()
+
+    if 'windows' in os_lower:
+        DETECTED_OS = 'windows'
+    elif 'linux' in os_lower:
+        DETECTED_OS = 'linux'
+    elif 'darwin' in os_lower or 'macos' in os_lower:
+        DETECTED_OS = 'macos'
+    else:
+        DETECTED_OS = None
+
+    print(f"[SSH_UTILS] OS type set to: {DETECTED_OS} (from: {os_type})", flush=True)
+
+def get_detected_os():
+    """Returns the currently detected OS type."""
+    return DETECTED_OS
 
 # --- Functii de generare si deploy chei ---
 
@@ -248,12 +300,18 @@ def execute_ssh_command(command: str) -> str:
         pkey = paramiko.RSAKey.from_private_key_file(key_path)
         client.connect(hostname=ip, port=port, username=user, pkey=pkey, timeout=30)
 
-        # Detectam daca este Windows pentru a folosi get_pty=False
-        # Windows commands: ver, dir, cd, cls, etc.
-        is_likely_windows = any(cmd in command.lower() for cmd in ['ver', 'w32tm', 'net start', 'net stop', 'powershell', 'cmd.exe', 'dir ', 'cls'])
+        # Determine PTY usage based on detected OS
+        # Use actual detected OS if available, otherwise fallback to keyword heuristic
+        if DETECTED_OS is not None:
+            # Use the OS that was actually detected at task start
+            is_windows = (DETECTED_OS == 'windows')
+        else:
+            # Fallback: Heuristic detection based on command keywords (less reliable)
+            # Windows commands: ver, dir, cd, cls, etc.
+            is_windows = any(cmd in command.lower() for cmd in ['ver', 'w32tm', 'net start', 'net stop', 'powershell', 'cmd.exe', 'dir ', 'cls'])
 
         # get_pty=True pentru Unix (evita blocaje cu pager), False pentru Windows (evita ANSI escape sequences)
-        use_pty = not is_likely_windows
+        use_pty = not is_windows
         stdin, stdout, stderr = client.exec_command(command, timeout=1200, get_pty=use_pty)
 
         # --- FIX: Close STDIN immediately ---
@@ -266,15 +324,25 @@ def execute_ssh_command(command: str) -> str:
         error_output = stderr.read().decode('utf-8', 'ignore').strip()
         exit_status = stdout.channel.recv_exit_status()
 
+        # DEBUG: Log raw output before stripping
+        print(f"[SSH_UTILS DEBUG] Command: {command[:50]}...", flush=True)
+        print(f"[SSH_UTILS DEBUG] Raw stdout length: {len(output)}, stderr length: {len(error_output)}", flush=True)
+        print(f"[SSH_UTILS DEBUG] Raw stdout (first 200 chars): {repr(output[:200])}", flush=True)
+        print(f"[SSH_UTILS DEBUG] get_pty={use_pty}, exit_status={exit_status}", flush=True)
+
         # Stergem ANSI escape sequences din output
-        output = strip_ansi_sequences(output)
-        error_output = strip_ansi_sequences(error_output)
+        output_stripped = strip_ansi_sequences(output)
+        error_output_stripped = strip_ansi_sequences(error_output)
+
+        # DEBUG: Log after stripping
+        print(f"[SSH_UTILS DEBUG] After strip stdout length: {len(output_stripped)}, stderr length: {len(error_output_stripped)}", flush=True)
+        print(f"[SSH_UTILS DEBUG] After strip stdout (first 200 chars): {repr(output_stripped[:200])}", flush=True)
 
         full_output = ""
-        if output:
-            full_output += output
-        if error_output:
-            full_output += ("\n---\nSTDERR:\n" if full_output else "") + error_output
+        if output_stripped:
+            full_output += output_stripped
+        if error_output_stripped:
+            full_output += ("\n---\nSTDERR:\n" if full_output else "") + error_output_stripped
 
         if exit_status != 0:
             return f"Error (Exit Code {exit_status}):\n{full_output if full_output else 'Command failed with no output.'}"

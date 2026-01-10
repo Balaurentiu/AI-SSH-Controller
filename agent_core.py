@@ -11,7 +11,7 @@ from eventlet.timeout import Timeout
 
 # Importam functiile necesare din modulele separate
 from config import get_config
-from ssh_utils import execute_ssh_command
+from ssh_utils import execute_ssh_command, set_detected_os
 from log_manager import UnifiedLogManager
 
 # ---
@@ -310,25 +310,82 @@ def test_ssh_connectivity(socketio, global_state):
 def execute_ssh_command_with_timeout(socketio, global_state, command, timeout_seconds, max_retries=3):
     """
     Executa o comanda SSH cu timeout si retry logic.
-    Citeste timeout-ul dinamic din global_state la fiecare incercare.
+    Citeste timeout-ul dinamic din global_state pentru a permite actualizari live.
     Returneaza (success, result, attempt_number).
     """
+    import eventlet
     from eventlet.timeout import Timeout as EventletTimeout
+    from eventlet.event import Event
 
     for attempt in range(1, max_retries + 1):
         try:
-            # Use the timeout specific to this step (calculated in the main loop)
-            current_timeout = timeout_seconds
+            # Read current timeout from global_state (allows live updates during execution)
+            current_timeout = global_state.get('command_timeout', timeout_seconds)
             log_and_emit(socketio, global_state, f"Executing command (attempt {attempt}/{max_retries}, timeout: {current_timeout}s)...")
 
-            # Execute with timeout
-            with EventletTimeout(current_timeout):
-                result = execute_ssh_command(command)
-                return True, result, attempt
+            # Create an event to signal completion
+            execution_complete = Event()
+            execution_result = {'success': False, 'data': None, 'timed_out': False}
+            start_time = time.time()
+
+            def execute_command_greenlet():
+                """Greenlet that executes the SSH command."""
+                try:
+                    result = execute_ssh_command(command)
+                    execution_result['success'] = True
+                    execution_result['data'] = result
+                except Exception as e:
+                    execution_result['success'] = False
+                    execution_result['data'] = str(e)
+                finally:
+                    execution_complete.send()
+
+            def timeout_monitor_greenlet():
+                """Greenlet that monitors timeout from global_state."""
+                try:
+                    while not execution_complete.ready():
+                        elapsed = time.time() - start_time
+                        # Read current timeout from global_state (allows live updates)
+                        current_limit = global_state.get('command_timeout', timeout_seconds)
+
+                        if elapsed >= current_limit:
+                            execution_result['timed_out'] = True
+                            execution_complete.send()
+                            break
+
+                        eventlet.sleep(0.5)  # Check every 0.5 seconds
+                except:
+                    pass
+
+            # Start both greenlets
+            exec_greenlet = eventlet.spawn(execute_command_greenlet)
+            monitor_greenlet = eventlet.spawn(timeout_monitor_greenlet)
+
+            # Wait for completion or timeout
+            execution_complete.wait()
+
+            # Kill both greenlets
+            try:
+                exec_greenlet.kill()
+                monitor_greenlet.kill()
+            except:
+                pass
+
+            # Check if timed out
+            if execution_result['timed_out']:
+                actual_timeout = global_state.get('command_timeout', timeout_seconds)
+                log_and_emit(socketio, global_state, f"--- TIMEOUT after {actual_timeout}s (attempt {attempt}/{max_retries}) ---")
+                raise EventletTimeout()
+
+            # Return result if successful
+            if execution_result['success']:
+                return True, execution_result['data'], attempt
+            else:
+                raise Exception(execution_result['data'])
 
         except EventletTimeout:
-            # Use the timeout specific to this step
-            actual_timeout = timeout_seconds
+            # Read actual timeout that was used
+            actual_timeout = global_state.get('command_timeout', timeout_seconds)
             log_and_emit(socketio, global_state, f"--- TIMEOUT after {actual_timeout}s (attempt {attempt}/{max_retries}) ---")
 
             # Test connectivity immediately to see if host is down or just busy
@@ -615,21 +672,42 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
 
         # Detectam OS si user info
         try:
-            os_result = execute_ssh_command("uname -s 2>/dev/null || echo 'Windows'")
+            # Try uname first (works on Unix/Linux/macOS)
+            os_result = execute_ssh_command("uname -s 2>/dev/null || ver")
             user_result = execute_ssh_command("whoami")
+
+            # DEBUG: Log what we actually received
+            log_agent(f"[OS DETECTION DEBUG] os_result raw: '{os_result}'")
+            log_agent(f"[OS DETECTION DEBUG] user_result raw: '{user_result}'")
 
             detected_os = "Unknown"
             if "Linux" in os_result:
                 detected_os = "Linux"
-            elif "Windows" in os_result or "Error" in os_result:
-                detected_os = "Windows (or non-Unix)"
             elif "Darwin" in os_result:
                 detected_os = "macOS"
+            elif "Windows" in os_result or "Microsoft" in os_result or "Version" in os_result:
+                # Windows 'ver' command returns something like "Microsoft Windows [Version 10.0.xxxxx]"
+                detected_os = "Windows (or non-Unix)"
+            elif "Error" in os_result or not os_result.strip():
+                # If uname fails and ver also fails, try another Windows detection
+                log_agent("[OS DETECTION] First attempt failed, trying Windows-specific detection...")
+                win_test = execute_ssh_command("echo %OS%")
+                log_agent(f"[OS DETECTION DEBUG] win_test result: '{win_test}'")
+                if "Windows" in win_test:
+                    detected_os = "Windows (or non-Unix)"
+                else:
+                    detected_os = "Windows (or non-Unix)"  # Default to Windows if all else fails
 
             # Curatam user_result - luam ultima linie non-empty (pentru Windows care poate avea caractere ciudate)
             if "Error" not in user_result:
                 user_lines = [line.strip() for line in user_result.split('\n') if line.strip()]
-                detected_user = user_lines[-1] if user_lines else "unknown"
+                raw_user = user_lines[-1] if user_lines else "unknown"
+
+                # Windows whoami returns "HOSTNAME\username" - extract only username
+                if '\\' in raw_user:
+                    detected_user = raw_user.split('\\')[-1]  # Take part after backslash
+                else:
+                    detected_user = raw_user
             else:
                 detected_user = "unknown"
 
@@ -639,6 +717,9 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
             # Actualizam system_os_info cu informatii complete
             system_context = f"OS: {detected_os}, User: {detected_user}, Sudo: {sudo_status}"
             global_state['system_os_info'] = system_context
+
+            # IMPORTANT: Communicate detected OS to ssh_utils for proper PTY handling
+            set_detected_os(detected_os)
 
             # Update log manager with system info string prep
             system_info_detailed = f"{detected_os}, user: {detected_user}, Sudo: {sudo_status}, IP: {global_state.get('system_ip', 'unknown')}"
@@ -853,20 +934,28 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
                 thinking.start()
 
                 try:
-                    # Apelam LLM-ul
-                    llm_response_obj = llm.invoke(full_prompt)
+                    # DEFINE STOP SEQUENCES (prevent output hallucination)
+                    # Gemini limit: max 5 stop sequences
+                    stop_sequences = ["Output:", "Observation:", "Result:", "\nOutput", "\nResult"]
+
+                    # Invoke LLM with stop sequences
+                    try:
+                        llm_response_obj = llm.invoke(full_prompt, stop=stop_sequences)
+                    except TypeError:
+                        # Fallback for models that don't accept 'stop' parameter
+                        llm_response_obj = llm.invoke(full_prompt)
 
                     # Oprim indicatorul de thinking
                     thinking.stop()
-                    
+
                     # Extragem textul
                     if PROVIDER == 'gemini' and hasattr(llm_response_obj, 'content'):
                         llm_response = llm_response_obj.content
                     else:
                         llm_response = str(llm_response_obj)
-                    
+
                     llm_response = llm_response.strip()
-                    
+
                     if not llm_response:
                         raise ValueError("Empty response from LLM.")
                         
@@ -1197,6 +1286,39 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
             # --- CAZUL 5: COMMAND (Executie SSH) ---
             elif command_match:
                 raw_cmd = command_match.group(1).strip()
+
+                # --- HALLUCINATION SANITIZATION FILTER ---
+                # If LLM generated "Output:" or similar markers, cut everything after
+                # Note: Using case-insensitive matching via lower() comparison
+                hallucination_markers = ["Output:", "Result:", "Observation:"]
+                for marker in hallucination_markers:
+                    # Case-insensitive check
+                    if marker.lower() in raw_cmd.lower():
+                        # Find the position and split
+                        marker_pos = raw_cmd.lower().find(marker.lower())
+                        raw_cmd = raw_cmd[:marker_pos].strip()
+                        print(f"[SANITIZATION] Filtered hallucinated output marker: {marker}")
+
+                # If command has multiple lines and contains output marker on subsequent lines
+                # Take only the first valid line
+                command_lines = raw_cmd.split('\n')
+                if len(command_lines) > 1:
+                    # Check if any line after the first contains output markers
+                    for i, line in enumerate(command_lines):
+                        for marker in hallucination_markers:
+                            # Case-insensitive check
+                            if marker.lower() in line.lower() and i > 0:  # Not the first line
+                                # Truncate to lines before the marker
+                                command_lines = command_lines[:i]
+                                raw_cmd = '\n'.join(command_lines).strip()
+                                print(f"[SANITIZATION] Filtered hallucinated output on line {i+1}")
+                                break
+
+                # Edge case: If command is empty after filtering (ex: COMMAND: Output:...)
+                if not raw_cmd:
+                    print("[SANITIZATION] Empty command after filtering hallucination. Injecting error message.")
+                    raw_cmd = "echo 'Error: LLM hallucinated output without command'"
+                # --- END HALLUCINATION SANITIZATION ---
 
                 # DEFENSIVE SANITIZATION: Line-by-line check to catch edge cases
                 # Stop at first line that starts with a reserved keyword
@@ -1623,7 +1745,18 @@ def process_chat_message(socketio, global_state, user_message):
 
             # 3. Invoke LLM
             socketio.emit('chat_status', {'status': 'thinking'})
-            response_obj = llm.invoke(full_prompt)
+
+            # DEFINE STOP SEQUENCES
+            # Tell the LLM to stop if it starts writing Output or Observation
+            # Gemini limit: max 5 stop sequences
+            stop_sequences = ["Output:", "Observation:", "Result:", "\nOutput", "\nResult"]
+
+            # Check if model supports 'stop' in invoke method (most LangChain models do)
+            try:
+                response_obj = llm.invoke(full_prompt, stop=stop_sequences)
+            except TypeError:
+                # Fallback for models that don't accept 'stop' directly in invoke
+                response_obj = llm.invoke(full_prompt)
 
             response_text = ""
             if hasattr(response_obj, 'content'):

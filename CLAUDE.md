@@ -60,6 +60,13 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 - SocketIO event handlers for real-time communication
 - Routes for configuration management (agent config, system config, prompts)
 - Session persistence using `session_manager.py`
+- **Dual LLM Configuration**:
+  - Separate Chat LLM and Execution LLM support
+  - Chat LLM reads API keys from `[General]` section (gemini_api_key, anthropic_api_key)
+  - Ensures API key persistence across container rebuilds
+- **Action Plan Management**:
+  - `/update_action_plan` endpoint updates existing plans in-place (not creating new ones)
+  - Proper edit/save functionality for plan steps
 
 **agent_core.py** - Autonomous agent logic
 - `agent_task_runner()` - Main execution loop running in eventlet greenthread
@@ -71,15 +78,35 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 - Step output summarization when command output exceeds 30% of summarization threshold (cloud providers only)
 - Execution modes: Independent (auto-validate), Assisted (user approval), with optional ASK capability
 - LangChain integration for search result and step output summarization (cloud providers)
+- **Enhanced OS Detection** (runs at task start):
+  - Executes `uname -s 2>/dev/null || ver` for cross-platform detection
+  - Detects Linux, macOS, Windows via output parsing (`Microsoft`, `Version` keywords)
+  - Fallback to `echo %OS%` if primary detection fails
+  - Parses Windows `whoami` format (`HOSTNAME\username`) to extract just username
+  - Calls `set_detected_os()` to communicate OS to ssh_utils.py for proper PTY handling
+  - Debug logging shows raw detection results
+- **LLM Hallucination Prevention**:
+  - Stop sequences in LLM invocations (max 5 for Gemini compatibility): `["Output:", "Observation:", "Result:", "\nOutput", "\nResult"]`
+  - Post-processing sanitization filter removes hallucinated output markers
+  - Case-insensitive matching for robustness
 - **NEW**: Explicit action plan step completion via `<<MARK_STEP_COMPLETED: X>>` tags in chat
 - **NEW**: Automatic completion prompt injection for chat-initiated searches
 
 **ssh_utils.py** - SSH operations
 - `execute_ssh_command()` - Executes commands on remote system via paramiko
-- ANSI escape sequence stripping for Windows compatibility
-- Windows detection (uses `get_pty=False` for Windows, `True` for Unix)
+- **Enhanced ANSI escape sequence stripping** for Windows compatibility:
+  - Removes CSI sequences (colors, cursor movements)
+  - Removes OSC Window Title sequences (fixes `0;C:\WINDOWS\system32\conhost.exe` artifacts)
+  - Line-by-line fallback filtering for orphaned artifacts
+- **OS-aware PTY handling**:
+  - Global `DETECTED_OS` variable stores OS type ('windows', 'linux', 'macos')
+  - `set_detected_os(os_type)` - Called by agent_core.py after OS detection
+  - `get_detected_os()` - Returns current OS type
+  - Uses `get_pty=False` for Windows, `True` for Unix (based on actual detected OS, not keyword guessing)
+  - Fallback to keyword heuristic if OS not yet detected
 - SSH key generation and deployment
 - Sudo capability detection (skips on Windows)
+- **Debug logging** for command execution (stdout/stderr lengths, PTY mode, exit status)
 
 **config.py** - Configuration management
 - Creates `config.ini` with defaults if missing
@@ -106,6 +133,9 @@ python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manage
 **log_manager.py** - Unified logging architecture
 - `BaseLogManager` - Manages immutable full log in `execution_log.txt` (append-only)
 - `ViewGenerator` - Creates different log views (Actions, Commands, VM Screen) from full log
+  - **VM Screen View**: Parses username from System Info with Windows format support
+  - Regex handles both `user: username` and `user: HOSTNAME\username` formats
+  - Extracts just username for display (e.g., `aiadmin@192.168.0.192~#`)
 - `AgentMemoryManager` - Manages LLM working memory in `execution_log_llm_context.txt`
 - `UnifiedLogManager` - Facade providing unified interface for all logging operations
 - `ActionPlanManager` - Manages multi-step action plans with stack structure
@@ -273,8 +303,22 @@ The system maintains two separate memory stores:
 - Fixed with runtime check in `session_manager.py` that auto-detects and fixes
 
 **Windows SSH Compatibility:**
-- ANSI escape sequences stripped via regex in `ssh_utils.py:strip_ansi_sequences()`
-- Uses `get_pty=False` for Windows commands, `True` for Unix (detected via command keywords)
+- **Enhanced ANSI stripping** in `ssh_utils.py:strip_ansi_sequences()`:
+  - CSI pattern: `\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])` removes colors/cursor control
+  - OSC pattern: `\x1B\]0;.*?(?:\x07|\x1B\\)` removes Window Title sequences
+  - Line-by-line fallback removes orphaned artifacts like `0;C:\WINDOWS\system32\conhost.exe`
+- **OS Detection & PTY Handling**:
+  - agent_core.py detects OS at task start via `uname -s 2>/dev/null || ver`
+  - Communicates detected OS to ssh_utils via `set_detected_os(detected_os)`
+  - ssh_utils stores in global `DETECTED_OS` variable ('windows', 'linux', 'macos')
+  - `execute_ssh_command()` uses actual detected OS (not keyword guessing) for PTY mode
+  - Windows: `get_pty=False` (prevents ANSI artifacts)
+  - Unix/Linux/macOS: `get_pty=True` (prevents pager blocking)
+  - Fallback to keyword heuristic if OS not yet detected
+- **Windows Username Parsing**:
+  - Windows `whoami` returns `HOSTNAME\username` format
+  - agent_core.py extracts just username part: `raw_user.split('\\')[-1]`
+  - log_manager.py VM Screen parser handles both formats with regex
 - Sudo detection skips Windows entirely
 
 **LLM Response Parsing:**
@@ -295,6 +339,21 @@ The system maintains two separate memory stores:
 - Parser in `agent_core.py` handles whitespace variations and retries on invalid format
 - SRCH results are summarized using LangChain when using cloud providers (Gemini/Anthropic)
 - All special tags are automatically removed from displayed messages to keep UI clean
+
+**LLM Hallucination Prevention:**
+- **Stop Sequences** (Gemini max: 5, applied to both Chat and Execution LLMs):
+  - `["Output:", "Observation:", "Result:", "\nOutput", "\nResult"]`
+  - Tells LLM to stop generation when it starts writing output
+  - Applied via `llm.invoke(prompt, stop=stop_sequences)`
+  - Fallback to no-stop invocation if model doesn't support stop parameter
+- **Post-Processing Sanitization** (agent_core.py command parsing):
+  - Case-insensitive detection: `marker.lower() in raw_cmd.lower()`
+  - Markers: `["Output:", "Result:", "Observation:"]`
+  - Truncates command at first output marker
+  - Multi-line protection: checks each line for markers
+  - Edge case: injects error message if command empty after filtering
+- **Why**: LLMs sometimes hallucinate command outputs (e.g., `COMMAND: ls\nOutput: file1.txt file2.txt`)
+- **Result**: Prevents execution of hallucinated output as part of command
 
 **History Summarization:**
 - Triggered when LLM context (execution_log_llm_context.txt) exceeds threshold (default 15000 chars)
@@ -383,10 +442,20 @@ No automated tests present. Manual testing workflow:
 - Check timer reads from global_state dynamically
 - Verify backend handler updates global_state immediately
 
-**Windows output garbled:**
-- ANSI sequences should be stripped automatically
-- Check `strip_ansi_sequences()` being called
-- Verify Windows detection working (looks for 'ver', 'w32tm', etc. in command)
+**Windows output garbled or blank:**
+- **Debug logging enabled**: Check docker logs for `[SSH_UTILS DEBUG]` messages
+- **Raw output check**: Look for "Raw stdout length" - if 0, command produced no output
+- **Strip check**: Compare "Raw stdout length" vs "After strip stdout length"
+  - If raw has content but stripped is empty, ANSI stripping is too aggressive
+  - Check for Window Title sequences being properly removed
+- **PTY mode check**: Windows should use `get_pty=False`
+  - Look for `[SSH_UTILS] OS type set to: windows` at task start
+  - Verify `get_pty=False` in debug output
+  - If PTY wrong, check OS detection succeeded
+- **ANSI artifacts**: Lines starting with `0;` and containing `conhost.exe` or `:\` are filtered
+- **OS detection**: Run new task to trigger detection, check logs for:
+  - `[OS DETECTION DEBUG] os_result raw: '...'`
+  - `[SSH_UTILS] OS type set to: windows`
 
 **Agent gets stuck/blocked:**
 - Likely pager issue - check if `PAGER=cat` prefix added
@@ -428,6 +497,37 @@ No automated tests present. Manual testing workflow:
   - This method is unreliable - use explicit tags instead
 - **ChatPrompt section 6** teaches LLM when to use the tag - verify it's present in config.ini
 - **Check the plan exists**: View action_plan.json to verify plan structure
+
+**OS Detection showing "Unknown":**
+- **Check task start**: OS detection runs automatically at beginning of each task
+- **Not during connection test**: "Test Connection" doesn't trigger OS detection
+- **Debug logs**: Look for `[OS DETECTION DEBUG]` messages in docker logs
+  - Should show: `os_result raw: 'Microsoft Windows [Version ...]'` for Windows
+  - Should show: `os_result raw: 'Linux'` for Linux
+- **Detection command**: `uname -s 2>/dev/null || ver` runs at task start
+- **Fallback logic**: If first detection fails, tries `echo %OS%` on Windows
+- **Communication check**: Verify `[SSH_UTILS] OS type set to: windows` appears
+- **If still Unknown**: OS detection command may be failing - check SSH connectivity
+
+**VM Screen showing wrong username (hostname instead):**
+- **Windows format**: `whoami` returns `HOSTNAME\username` on Windows
+- **Fix applied**: agent_core.py extracts username part after backslash
+- **Backward compatibility**: log_manager.py regex handles both formats
+- **Check logs**: System detection should show `User: aiadmin` not `User: win11\aiadmin`
+- **Old logs**: Historical logs with old format still parsed correctly
+
+**Chat LLM API key not persisting:**
+- **Root cause**: Chat LLM was reading from `[ChatLLM].api_key` instead of `[General].gemini_api_key`
+- **Fix applied**: Chat LLM now reads from same location as Execution LLM
+- **Gemini**: Reads from `[General].gemini_api_key`
+- **Anthropic**: Reads from `[General].anthropic_api_key`
+- **Verification**: Check startup logs for `[CHAT LLM INIT] ✓ Chat LLM initialized`
+
+**Action Plan edit/save not working:**
+- **Root cause**: `/update_action_plan` was creating new plans instead of updating existing
+- **Fix applied**: Endpoint now updates existing plan in-place
+- **How to test**: Edit a step text, click Save, refresh - text should persist
+- **Stack handling**: Uses `stack[-1]` to update active plan directly
 
 **Action Plan UI issues:**
 - **Edit mode getting reset**: Auto-refresh protection should prevent this

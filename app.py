@@ -397,7 +397,14 @@ def initialize_llm_status():
         print("[CHAT LLM INIT] Initializing separate Chat LLM...", flush=True)
         chat_provider = cfg.get('ChatLLM', 'provider', fallback='ollama')
         chat_model = cfg.get('ChatLLM', 'model_name', fallback='')
-        chat_api_key = cfg.get('ChatLLM', 'api_key', fallback='')
+
+        # Read API key from [General] section based on provider (same as execution LLM)
+        if chat_provider == 'gemini':
+            chat_api_key = cfg.get('General', 'gemini_api_key', fallback='')
+        elif chat_provider == 'anthropic':
+            chat_api_key = cfg.get('General', 'anthropic_api_key', fallback='')
+        else:
+            chat_api_key = ''
 
         print(f"[CHAT LLM INIT] Provider: {chat_provider}, Model: {chat_model}", flush=True)
 
@@ -1896,22 +1903,34 @@ def update_action_plan():
 
     log_manager = GLOBAL_STATE.get('log_manager')
     if log_manager:
-        # Extract step objectives for set_action_plan (which expects List[str])
-        step_objectives = [step.get('objective', '') for step in steps_data if step.get('objective')]
-
-        # Set the plan (this creates/pushes a new plan)
-        log_manager.set_action_plan(title, step_objectives)
-
-        # Now we need to update the completion status for each step
-        # Load the stack and update the active plan's completed flags
+        # Load the existing stack
         stack = log_manager.action_plan.load_stack()
-        if stack and 'steps' in stack[-1]:
-            active_plan = stack[-1]
-            for idx, step_data in enumerate(steps_data):
-                if idx < len(active_plan['steps']) and step_data.get('completed', False):
-                    active_plan['steps'][idx]['completed'] = True
 
-            # Save the updated stack
+        if stack:
+            # UPDATE existing plan (don't create a new one)
+            active_plan = stack[-1]
+            active_plan['title'] = title
+
+            # Update steps with new objectives and completed flags
+            active_plan['steps'] = [
+                {'objective': step.get('objective', ''), 'completed': step.get('completed', False)}
+                for step in steps_data if step.get('objective')
+            ]
+        else:
+            # CREATE new plan if none exists
+            step_objectives = [step.get('objective', '') for step in steps_data if step.get('objective')]
+            log_manager.set_action_plan(title, step_objectives)
+
+            # Update completion flags for newly created plan
+            stack = log_manager.action_plan.load_stack()
+            if stack:
+                active_plan = stack[-1]
+                for idx, step_data in enumerate(steps_data):
+                    if idx < len(active_plan['steps']) and step_data.get('completed', False):
+                        active_plan['steps'][idx]['completed'] = True
+
+        # Save the updated stack
+        if stack:
             log_manager.action_plan._save_stack(stack)
 
         # Emit update to all clients

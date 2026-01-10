@@ -278,10 +278,11 @@ class ViewGenerator:
                 lines.append("")
             elif line_stripped.startswith("System Info:"):
                 system_info = line_stripped.replace("System Info:", "").strip()
-                user_match = re.search(r'user:\s*(\w+)', system_info, re.IGNORECASE)
+                # Match user: username or user: HOSTNAME\username (Windows format)
+                user_match = re.search(r'user:\s*(?:[\w-]+\\)?(\w+)', system_info, re.IGNORECASE)
                 ip_match = re.search(r'IP:\s*([\d\.]+)', system_info)
                 if user_match:
-                    username = user_match.group(1)
+                    username = user_match.group(1)  # Extracts username after backslash if present
                 if ip_match:
                     ip = ip_match.group(1)
             elif line_stripped.startswith("COMMAND EXECUTED:"):
