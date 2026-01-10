@@ -269,6 +269,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Full log storage for filtering
     let fullLogContent = '';
 
+    // Memory leak prevention - store interval/listener references
+    let actionPlanRefreshInterval = null;
+    const MAX_LOG_SIZE = 100000; // 100KB max for fullLogContent
+
     // --- Functii Helper ---
 
     /**
@@ -418,6 +422,13 @@ document.addEventListener('DOMContentLoaded', () => {
             fullLogContent = text;
         } else {
             fullLogContent += '\n' + text;
+        }
+
+        // Memory leak prevention: Truncate if too large
+        if (fullLogContent.length > MAX_LOG_SIZE) {
+            // Keep only the last MAX_LOG_SIZE characters
+            fullLogContent = fullLogContent.substring(fullLogContent.length - MAX_LOG_SIZE);
+            console.log('Log truncated to prevent memory leak');
         }
 
         // Apply mode-specific filter and display
@@ -905,6 +916,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let startY = 0;
     let startHeight = 0;
 
+    // Store references to listeners for cleanup
+    let mouseMoveHandler = null;
+    let mouseUpHandler = null;
+
     if (resizerHandle && inputContainer) {
         resizerHandle.addEventListener('mousedown', (e) => {
             isResizing = true;
@@ -917,26 +932,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Prevent text selection while dragging
             e.preventDefault();
-        });
 
-        document.addEventListener('mousemove', (e) => {
-            if (!isResizing) return;
+            // Define handlers
+            mouseMoveHandler = (e) => {
+                if (!isResizing) return;
 
-            // Calculate delta (Movement UP means delta is negative, so we add to height)
-            // If we move Mouse UP (lower Y), the Input Height should INCREASE.
-            const delta = startY - e.clientY;
-            const newHeight = startHeight + delta;
+                // Calculate delta (Movement UP means delta is negative, so we add to height)
+                // If we move Mouse UP (lower Y), the Input Height should INCREASE.
+                const delta = startY - e.clientY;
+                const newHeight = startHeight + delta;
 
-            // Apply new height (CSS min/max-height will constrain it automatically)
-            inputContainer.style.height = `${newHeight}px`;
-        });
+                // Apply new height (CSS min/max-height will constrain it automatically)
+                inputContainer.style.height = `${newHeight}px`;
+            };
 
-        document.addEventListener('mouseup', () => {
-            if (isResizing) {
-                isResizing = false;
-                resizerHandle.classList.remove('dragging');
-                document.body.style.cursor = 'default';
-            }
+            mouseUpHandler = () => {
+                if (isResizing) {
+                    isResizing = false;
+                    resizerHandle.classList.remove('dragging');
+                    document.body.style.cursor = 'default';
+
+                    // CLEANUP: Remove listeners to prevent accumulation
+                    document.removeEventListener('mousemove', mouseMoveHandler);
+                    document.removeEventListener('mouseup', mouseUpHandler);
+                }
+            };
+
+            // Add listeners
+            document.addEventListener('mousemove', mouseMoveHandler);
+            document.addEventListener('mouseup', mouseUpHandler);
         });
     }
 
@@ -1426,7 +1450,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // Auto-refresh action plan status every 3 seconds when chat tab is active
-    setInterval(() => {
+    // MEMORY LEAK FIX: Store interval reference for cleanup
+    actionPlanRefreshInterval = setInterval(() => {
         const chatView = document.getElementById('view-chat');
         // Don't refresh if user is editing/creating a plan
         if (chatView && chatView.style.display !== 'none' && !isPlanEditMode) {
@@ -1914,6 +1939,59 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initialize view buttons
     updateViewButtons();
+
+    // ========================================
+    // MEMORY LEAK PREVENTION - CLEANUP ON PAGE UNLOAD
+    // ========================================
+    window.addEventListener('beforeunload', () => {
+        console.log('Cleaning up resources to prevent memory leaks...');
+
+        // 1. Clear all intervals
+        if (actionPlanRefreshInterval) {
+            clearInterval(actionPlanRefreshInterval);
+            actionPlanRefreshInterval = null;
+        }
+
+        // 2. Remove SocketIO event listeners
+        if (socket) {
+            socket.off('initial_state');
+            socket.off('agent_log');
+            socket.off('vm_screen');
+            socket.off('task_started');
+            socket.off('task_finished');
+            socket.off('task_paused');
+            socket.off('task_resumed');
+            socket.off('awaiting_user_answer');
+            socket.off('timeout_updated');
+            socket.off('thinking_start');
+            socket.off('thinking_update');
+            socket.off('thinking_end');
+            socket.off('command_exec_start');
+            socket.off('command_exec_update');
+            socket.off('command_exec_end');
+            socket.off('update_history');
+            socket.off('chat_response');
+            socket.off('chat_status');
+            socket.off('chat_history_cleared');
+            socket.off('action_plan_data');
+            socket.off('action_plan_cleared');
+            socket.off('chat_task_proposal');
+            socket.off('update_raw_llm_responses');
+        }
+
+        // 3. Clear large data structures
+        fullLogContent = '';
+
+        // 4. Remove document-level event listeners (if any were added)
+        if (mouseMoveHandler) {
+            document.removeEventListener('mousemove', mouseMoveHandler);
+        }
+        if (mouseUpHandler) {
+            document.removeEventListener('mouseup', mouseUpHandler);
+        }
+
+        console.log('Cleanup complete');
+    });
 
 });
 </script>
