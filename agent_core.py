@@ -727,10 +727,11 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
             # --- NEW: Always Auto-Summarize Previous History on Task Start ---
             existing_context = log_manager.get_llm_context()
 
-            # Check if history exists and is larger than 1000 chars (User Preference)
+            # Check if history exists and is larger than 70% of threshold (User Preference)
             # We ignore the default "No commands" message
-            if existing_context and len(existing_context) > 1000 and "No commands have been executed yet" not in existing_context:
-                log_agent(f"--- Starting New Task: History size {len(existing_context)} chars > 1000. Forcing summarization... ---")
+            summarization_threshold_70 = int(SUMMARIZATION_THRESHOLD * 0.7)
+            if existing_context and len(existing_context) > summarization_threshold_70 and "No commands have been executed yet" not in existing_context:
+                log_agent(f"--- Starting New Task: History size {len(existing_context)} chars > {summarization_threshold_70} (70% of {SUMMARIZATION_THRESHOLD}). Forcing summarization... ---")
 
                 # Sync global state so summarizer sees the text
                 global_state['agent_history'] = existing_context
