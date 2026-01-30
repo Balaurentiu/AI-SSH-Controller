@@ -1,13 +1,11 @@
-# --- CORECTIE: Monkey patching pentru compatibilitate Gunicorn/Eventlet ---
-import eventlet
-eventlet.monkey_patch()
-
 # --- Importuri Python Standard & Pachete ---
+# Note: Eventlet removed for PyInstaller compatibility. Flask-SocketIO will use simple-websocket instead.
 import os
 import re
 import zipfile
 import json
 import traceback
+import threading
 from io import BytesIO, StringIO
 from datetime import datetime
 from functools import partial
@@ -15,7 +13,6 @@ from functools import partial
 # --- Importuri Flask & SocketIO ---
 from flask import Flask, render_template, request, jsonify, send_file, Response
 from flask_socketio import SocketIO
-from eventlet.event import Event
 
 # --- Importurile Noilor Module Refactorizate ---
 from config import (
@@ -36,7 +33,9 @@ from langchain_core.prompts import PromptTemplate
 
 # --- Initializam Aplicatia si WebSocket-ul ---
 app = Flask(__name__, template_folder='templates')
-socketio = SocketIO(app, async_mode='eventlet', cors_allowed_origins="*")
+# Let Flask-SocketIO auto-detect best async_mode for PyInstaller
+# Note: eventlet not working in PyInstaller, will fallback to threading
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # ---
 # --- STAREA GLOBALA A APLICATIEI ---
@@ -81,10 +80,10 @@ CONTROL_FLAGS = {
 }
 
 # --- Evenimente pentru Comunicare Thread-UI ---
-USER_APPROVAL_EVENT = Event()
+USER_APPROVAL_EVENT = threading.Event()
 USER_RESPONSE = {}
-SUMMARIZATION_EVENT = Event()
-USER_ANSWER_EVENT = Event()
+SUMMARIZATION_EVENT = threading.Event()
+USER_ANSWER_EVENT = threading.Event()
 USER_ANSWER = {}
 
 EVENT_OBJECTS = {
@@ -656,11 +655,21 @@ def save_system_config():
         
         with open(CONFIG_FILE_PATH, 'w') as f:
             cfg.write(f)
-        
+
+        # Salvam valorile anterioare pentru logging
+        previous_username = GLOBAL_STATE.get('system_username', '')
+        previous_ip = GLOBAL_STATE.get('system_ip', '')
+
         # Actualizam GLOBAL_STATE
         GLOBAL_STATE['system_ip'] = ip
         GLOBAL_STATE['system_username'] = username
-        
+
+        # Log SSH connection change to Full Log (single source of truth)
+        log_manager = GLOBAL_STATE.get('log_manager')
+        if log_manager:
+            log_manager.log_ssh_connection_change(username, ip, previous_username, previous_ip)
+            print(f"SSH connection change logged: {previous_username}@{previous_ip} -> {username}@{ip}")
+
         # Salvam in connections.json (istoric)
         connections = session_manager.load_connections()
         

@@ -147,6 +147,27 @@ Results:
         footer = "\n--- END FILE CONTENT ---\n\n"
         self._append(header + content + footer)
 
+    def log_ssh_connection_change(self, username: str, ip: str, previous_username: str = "", previous_ip: str = ""):
+        """
+        Log an SSH connection change event.
+        This creates an explicit record in the Full Log when the target system changes.
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        log_entry = f"""
+=== SSH CONNECTION CHANGED ===
+Timestamp: {timestamp}
+"""
+        if previous_username and previous_ip:
+            log_entry += f"Previous: {previous_username}@{previous_ip}\n"
+        else:
+            log_entry += "Previous: (none - first connection)\n"
+
+        log_entry += f"Current: {username}@{ip}\n"
+        log_entry += "==============================\n\n"
+
+        self._append(log_entry)
+
     def read_full_log(self) -> str:
         """Read and return the entire Full Log."""
         try:
@@ -270,7 +291,23 @@ class ViewGenerator:
 
         for line in full_log.splitlines():
             line_stripped = line.strip()
-            if line_stripped.startswith("Objective:"):
+            # ROBUST FIX: Parse explicit SSH connection change markers (single source of truth)
+            if line_stripped.startswith("=== SSH CONNECTION CHANGED ==="):
+                # We're entering a connection change block - parse the next few lines
+                # Format: "Current: username@ip"
+                pass  # Just a marker, actual parsing happens on "Current:" line
+            elif line_stripped.startswith("Current:") and "@" in line_stripped:
+                # Extract username@ip from "Current: username@ip" line
+                current_match = re.search(r'Current:\s*(\w+)@([\d\.]+)', line_stripped)
+                if current_match:
+                    username = current_match.group(1)
+                    ip = current_match.group(2)
+            # FALLBACK: Reset username/IP at start of NEW TASK (for backwards compatibility with old logs)
+            elif line_stripped.startswith("=== NEW TASK STARTED ==="):
+                # Reset to defaults - will be updated by next System Info line
+                username = "user"
+                ip = "remote"
+            elif line_stripped.startswith("Objective:"):
                 objective = line_stripped.replace("Objective:", "").strip()
                 lines.append("=== Objective ===")
                 lines.append(objective)
@@ -704,6 +741,11 @@ class UnifiedLogManager:
     def log_file_content(self, path: str, content: str):
         """Log file content to full log for audit and searchability."""
         self.base_log.log_file_content(path, content)
+
+    # === NEW: SSH Connection Change Logging ===
+    def log_ssh_connection_change(self, username: str, ip: str, previous_username: str = "", previous_ip: str = ""):
+        """Log SSH connection change to full log for audit trail."""
+        self.base_log.log_ssh_connection_change(username, ip, previous_username, previous_ip)
 
     # === NEW: Manual Edit Logging ===
     def log_manual_edit(self, new_context_content: str):

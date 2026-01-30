@@ -185,7 +185,61 @@ def clean_command_string(raw_command):
     elif (cmd.startswith("'") and cmd.endswith("'")) and len(cmd) > 2:
         cmd = cmd[1:-1].strip()
 
-    return cmd
+    # 4. Remove leading markdown/decorative symbols that LLMs sometimes add
+    # These are NOT valid bash command prefixes and break execution
+    # Examples: **, ***, ##, ###, -, >, etc.
+    max_iterations = 10  # Safety limit to prevent infinite loops
+    iteration_count = 0
+
+    while cmd and iteration_count < max_iterations:
+        original_cmd = cmd
+        iteration_count += 1
+
+        # Pattern 1: Asterisks (markdown bold/italic: *, **, ***)
+        if cmd.startswith('***'):
+            cmd = cmd[3:].lstrip()
+        elif cmd.startswith('**'):
+            cmd = cmd[2:].lstrip()
+        elif cmd.startswith('*') and (len(cmd) == 1 or cmd[1] in (' ', '\t', '*')):
+            cmd = cmd[1:].lstrip()
+
+        # Pattern 2: Hash symbols (markdown headers: #, ##, ###, ####)
+        elif cmd.startswith('####'):
+            cmd = cmd[4:].lstrip()
+        elif cmd.startswith('###'):
+            cmd = cmd[3:].lstrip()
+        elif cmd.startswith('##'):
+            cmd = cmd[2:].lstrip()
+        elif cmd.startswith('#') and (len(cmd) == 1 or cmd[1] in (' ', '\t', '#')):
+            cmd = cmd[1:].lstrip()
+
+        # Pattern 3: Leading dash (markdown list: -, --)
+        # CAREFUL: Don't remove single - followed by letter (valid flag like -l)
+        elif cmd.startswith('--') and (len(cmd) == 2 or cmd[2] in (' ', '\t', '-')):
+            cmd = cmd[2:].lstrip()
+        elif cmd.startswith('-') and (len(cmd) == 1 or cmd[1] in (' ', '\t')):
+            cmd = cmd[1:].lstrip()
+
+        # Pattern 4: Leading greater-than (markdown quote: >, >>)
+        # CAREFUL: Don't remove redirection (e.g., > file.txt should be preserved if it's a full command)
+        elif cmd.startswith('>>') and (len(cmd) == 2 or cmd[2] in (' ', '\t', '>')):
+            cmd = cmd[2:].lstrip()
+        elif cmd.startswith('>') and (len(cmd) == 1 or cmd[1] in (' ', '\t', '>')):
+            cmd = cmd[1:].lstrip()
+
+        # Pattern 5: Underscore repeating (markdown separator: ___, __, _)
+        elif cmd.startswith('___'):
+            cmd = cmd[3:].lstrip()
+        elif cmd.startswith('__') and (len(cmd) == 2 or cmd[2] in (' ', '\t', '_')):
+            cmd = cmd[2:].lstrip()
+        elif cmd.startswith('_') and (len(cmd) == 1 or cmd[1] in (' ', '\t', '_')):
+            cmd = cmd[1:].lstrip()
+
+        # No more patterns matched - command is clean
+        if cmd == original_cmd:
+            break
+
+    return cmd.strip()
 
 # ---
 # --- Pure Accumulation Strategy: No Helper Functions Needed ---
@@ -724,8 +778,19 @@ def agent_task_runner(socketio, global_state, control_flags, event_objects, log_
             # Update log manager with system info string prep
             system_info_detailed = f"{detected_os}, user: {detected_user}, Sudo: {sudo_status}, IP: {global_state.get('system_ip', 'unknown')}"
 
+            # Log SSH connection at task start (establishes single source of truth for current connection)
+            # This ensures VM Screen always shows correct username@ip for this task
+            current_username = global_state.get('system_username', 'unknown')
+            current_ip = global_state.get('system_ip', 'unknown')
+            log_manager.log_ssh_connection_change(current_username, current_ip, '', '')
+            log_agent(f"Task started on: {current_username}@{current_ip}")
+
             # --- NEW: Always Auto-Summarize Previous History on Task Start ---
             existing_context = log_manager.get_llm_context()
+
+            # Read summarization threshold from config (needed for auto-summarization check)
+            cfg_threshold = get_config()
+            SUMMARIZATION_THRESHOLD = cfg_threshold.getint('Agent', 'summarization_threshold', fallback=15000)
 
             # Check if history exists and is larger than 70% of threshold (User Preference)
             # We ignore the default "No commands" message

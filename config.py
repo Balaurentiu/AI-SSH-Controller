@@ -4,9 +4,10 @@ import traceback
 
 # --- CAI PERSISTENTE ---
 # Directorul radacina al aplicatiei (unde se afla acest fisier)
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# Support for PyInstaller: use environment variables if set (from run.py)
+APP_DIR = os.environ.get('APP_DIR', os.path.dirname(os.path.abspath(__file__)))
 # Directorul pentru chei SSH, conexiuni si loguri
-KEYS_DIR = os.path.join(APP_DIR, 'keys')
+KEYS_DIR = os.environ.get('KEYS_DIR', os.path.join(APP_DIR, 'keys'))
 # Fisierul principal de configurare
 # MOVED to KEYS_DIR to ensure persistence across Docker rebuilds
 CONFIG_FILE_PATH = os.path.join(KEYS_DIR, 'config.ini')
