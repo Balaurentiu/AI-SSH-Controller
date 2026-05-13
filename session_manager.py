@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 import traceback
 import zipfile
 from datetime import datetime
@@ -8,8 +9,12 @@ from typing import Dict, List, Optional
 from config import (
     APP_DIR, KEYS_DIR, SESSION_FILE_PATH, CONNECTIONS_FILE_PATH,
     EXECUTION_LOG_FILE_PATH, CHAT_LOG_FILE_PATH, ACTION_PLAN_FILE_PATH,
-    CONFIG_FILE_PATH, EXECUTION_LOG_LLM_CONTEXT_PATH
+    CONFIG_FILE_PATH, EXECUTION_LOG_LLM_CONTEXT_PATH, KNOWLEDGE_DIR,
+    AGENT_LIVE_LOG_PATH
 )
+
+# Keys that are non-serializable runtime objects (should not be saved to JSON)
+NON_SERIALIZABLE_KEYS = {'log_manager', 'chat_llm', 'knowledge_manager', 'web_search_status'}
 from log_manager import UnifiedLogManager
 
 # ---
@@ -79,7 +84,13 @@ def save_current_session_to_disk(current_state, session_path, log_path):
                 "raw_llm_responses": current_state.get('last_session', {}).get('raw_llm_responses', [])
                 # 'log' este exclus intentionat din JSON
             },
-            'full_history_backups': current_state.get('full_history_backups', [])
+            'full_history_backups': current_state.get('full_history_backups', []),
+            # API lock state — persists across Docker restarts / browser reconnects
+            'api_ui_locked': current_state.get('api_ui_locked', False),
+            'webui_watching_only': current_state.get('webui_watching_only', False),
+            # Auto-approve flags — synced from browser checkboxes, persist across restarts
+            'auto_accept_tasks': current_state.get('auto_accept_tasks', False),
+            'auto_switch': current_state.get('auto_switch', False),
         }
 
         with open(session_path, 'w') as f:
@@ -125,12 +136,22 @@ def load_session_from_disk(session_path, log_path):
             loaded_state['system_os_info'] = data.get('system_os_info', "Unknown OS.")
             loaded_state['persistent_vm_output'] = data.get('persistent_vm_output', "")
             loaded_state['full_history_backups'] = data.get('full_history_backups', [])
-            
+
             # Asiguram ca 'last_session' exista
             loaded_state['last_session'] = {
                 "final_report": data.get('last_session', {}).get('final_report', ""),
                 "raw_llm_responses": data.get('last_session', {}).get('raw_llm_responses', [])
             }
+
+            # API lock state — restored so browser shows the correct mode on reconnect
+            loaded_state['api_ui_locked'] = data.get('api_ui_locked', False)
+            loaded_state['webui_watching_only'] = data.get('webui_watching_only', False)
+            # auto_accept_tasks is intentionally NOT restored — always starts False
+            # to prevent unexpected task auto-starts after restarts.
+            # auto_switch is also reset for the same reason.
+            loaded_state['auto_accept_tasks'] = False
+            loaded_state['auto_switch'] = False
+
             print(f"Session state loaded from {session_path}.")
             
         except (json.JSONDecodeError, FileNotFoundError, TypeError) as e:
@@ -140,20 +161,22 @@ def load_session_from_disk(session_path, log_path):
         print(f"No session file found at {session_path}, starting fresh.")
         loaded_state = _get_default_session_data() # Folosim starea default
 
-    # 2. Incarcam 'execution_log.txt'
+    # 2. Load Agent Live Log (persistent across rebuilds)
+    # NOTE: We do NOT fall back to execution_log.txt — it uses a different format
+    # (UnifiedLogManager format) than the live log (log_and_emit format).
     log_content = ""
-    if os.path.exists(log_path):
+    if os.path.exists(AGENT_LIVE_LOG_PATH):
         try:
-            with open(log_path, 'r', encoding='utf-8') as f:
+            with open(AGENT_LIVE_LOG_PATH, 'r', encoding='utf-8') as f:
                 log_content = f.read()
-            print(f"Execution log loaded from {log_path}.")
+            print(f"Agent live log loaded from {AGENT_LIVE_LOG_PATH} ({len(log_content)} chars).")
         except Exception as e:
-            print(f"Error reading execution log file {log_path}: {e}")
-            log_content = f"Error loading log: {e}"
-    else:
-        print(f"No execution log found at {log_path}, starting with default message.")
+            print(f"Error reading agent live log: {e}")
+
+    if not log_content:
+        print(f"No agent live log found, starting with default message.")
         log_content = "No previous execution log found. Ready for new task."
-        
+
     # Adaugam log-ul la starea incarcata
     if 'last_session' not in loaded_state:
         loaded_state['last_session'] = {}
@@ -166,7 +189,7 @@ def reset_all_memory(session_path, log_path):
     Sterge fisierele de sesiune si log de pe disc.
     Returneaza starea default.
     """
-    files_to_delete = [session_path, log_path]
+    files_to_delete = [session_path, log_path, AGENT_LIVE_LOG_PATH]
     for f in files_to_delete:
         if os.path.exists(f):
             try:
@@ -216,9 +239,10 @@ def save_session_state(global_state):
     Dumps in-memory GLOBAL_STATE to session.json first.
     """
     try:
-        # 1. Dump in-memory state to session.json
+        # 1. Dump in-memory state to session.json (filter non-serializable objects)
+        state_to_save = {k: v for k, v in global_state.items() if k not in NON_SERIALIZABLE_KEYS}
         with open(SESSION_FILE_PATH, 'w') as f:
-            json.dump(global_state, f, indent=4, default=str)
+            json.dump(state_to_save, f, indent=4, default=str)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         zip_filename = f"session_{timestamp}.zip"
@@ -243,11 +267,22 @@ def save_session_state(global_state):
             if os.path.exists(EXECUTION_LOG_LLM_CONTEXT_PATH):
                 zipf.write(EXECUTION_LOG_LLM_CONTEXT_PATH, arcname='execution_log_llm_context.txt')
 
+            if os.path.exists(AGENT_LIVE_LOG_PATH):
+                zipf.write(AGENT_LIVE_LOG_PATH, arcname='agent_live_log.txt')
+
             if os.path.exists(CHAT_LOG_FILE_PATH):
                 zipf.write(CHAT_LOG_FILE_PATH, arcname='chat_history.json')
 
             if os.path.exists(ACTION_PLAN_FILE_PATH):
                 zipf.write(ACTION_PLAN_FILE_PATH, arcname='action_plan.json')
+
+            # Knowledge Directory (documents, metadata, vector store)
+            if os.path.exists(KNOWLEDGE_DIR):
+                for root, dirs, files in os.walk(KNOWLEDGE_DIR):
+                    for file_name in files:
+                        file_path = os.path.join(root, file_name)
+                        arcname = os.path.join('knowledge', os.path.relpath(file_path, KNOWLEDGE_DIR))
+                        zipf.write(file_path, arcname=arcname)
 
         print(f"Session saved to {zip_path}")
         return zip_path
@@ -288,6 +323,10 @@ def load_session_state(zip_path):
                 with open(EXECUTION_LOG_LLM_CONTEXT_PATH, 'wb') as f:
                     f.write(zipf.read('execution_log_llm_context.txt'))
 
+            if 'agent_live_log.txt' in zipf.namelist():
+                with open(AGENT_LIVE_LOG_PATH, 'wb') as f:
+                    f.write(zipf.read('agent_live_log.txt'))
+
             # Extract Chat & Plan
             if 'chat_history.json' in zipf.namelist():
                 with open(CHAT_LOG_FILE_PATH, 'wb') as f:
@@ -296,6 +335,27 @@ def load_session_state(zip_path):
             if 'action_plan.json' in zipf.namelist():
                 with open(ACTION_PLAN_FILE_PATH, 'wb') as f:
                     f.write(zipf.read('action_plan.json'))
+
+            # Extract Knowledge Directory (clean restore)
+            knowledge_entries = [n for n in zipf.namelist() if n.startswith('knowledge/')]
+            if knowledge_entries:
+                # Remove existing knowledge dir for clean restore
+                if os.path.exists(KNOWLEDGE_DIR):
+                    shutil.rmtree(KNOWLEDGE_DIR)
+                os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
+
+                for entry in knowledge_entries:
+                    if entry.endswith('/'):
+                        # Directory entry - create it
+                        os.makedirs(os.path.join(KNOWLEDGE_DIR, entry[len('knowledge/'):]), exist_ok=True)
+                        continue
+                    # File entry - extract it
+                    rel_path = entry[len('knowledge/'):]
+                    target_path = os.path.join(KNOWLEDGE_DIR, rel_path)
+                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                    with open(target_path, 'wb') as f:
+                        f.write(zipf.read(entry))
+                print(f"Knowledge directory restored ({len(knowledge_entries)} entries).")
 
         # Read the state back into memory to return it
         with open(SESSION_FILE_PATH, 'r') as f:

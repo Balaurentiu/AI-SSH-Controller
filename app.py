@@ -2,6 +2,8 @@
 # Note: Eventlet removed for PyInstaller compatibility. Flask-SocketIO will use simple-websocket instead.
 import os
 import re
+import time
+import uuid
 import zipfile
 import json
 import traceback
@@ -18,12 +20,14 @@ from flask_socketio import SocketIO
 from config import (
     get_config, KEYS_DIR, CONFIG_FILE_PATH,
     SESSION_FILE_PATH, CONNECTIONS_FILE_PATH, EXECUTION_LOG_FILE_PATH,
-    APP_DIR
+    APP_DIR, KNOWLEDGE_DIR
 )
 import ssh_utils
 import llm_utils
 import session_manager
 import agent_core
+import web_search_module
+import chat_export
 
 # --- Importuri LangChain (Added for Search Summarization) ---
 from langchain_community.llms import Ollama
@@ -33,9 +37,10 @@ from langchain_core.prompts import PromptTemplate
 
 # --- Initializam Aplicatia si WebSocket-ul ---
 app = Flask(__name__, template_folder='templates')
-# Let Flask-SocketIO auto-detect best async_mode for PyInstaller
-# Note: eventlet not working in PyInstaller, will fallback to threading
-socketio = SocketIO(app, cors_allowed_origins="*")
+# Use threading async_mode - eventlet blocks entire event loop on slow LLM calls
+# because there's no monkey_patch. Threading uses real OS threads so blocking I/O
+# in one thread (e.g. Gemini API timeout) doesn't freeze the whole server.
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # ---
 # --- STAREA GLOBALA A APLICATIEI ---
@@ -58,7 +63,7 @@ GLOBAL_STATE = {
     "current_objective": "", # Obiectivul curent al task-ului
     "current_execution_mode": "independent", # "independent" sau "assisted"
     "current_summarization_mode": "automatic", # "automatic" sau "assisted"
-    "current_allow_ask_mode": False, # True sau False
+    "current_allow_ask_mode": True, # True sau False
     "validator_enabled": True, # NEW: Master switch for the LLM Validator
     "system_username": "", # Numele utilizatorului sistemului tinta
     "system_ip": "", # IP-ul sistemului tinta
@@ -68,8 +73,123 @@ GLOBAL_STATE = {
     "task_paused": False,
     "human_search_pending": False,  # Flag to pause agent execution during human-initiated search
     "ssh_connection_status": {"status": "unknown", "message": "Not tested yet."},
-    "llm_connection_status": {"status": "unknown", "message": "Not tested yet."}
+    "llm_connection_status": {"status": "unknown", "message": "Not tested yet."},
+    "api_ui_locked": False,          # Stays True until user clicks "Take Control" or /api/chat/release
+    "webui_watching_only": False,    # User opened browser but ceded control back to API (Watch Only)
+    "auto_accept_tasks": False,      # Auto-start task proposals without human approval
+    "auto_switch": False,            # Auto-approve system switch proposals without human approval
 }
+
+# --- Lock for task-start critical section ---
+# Protects the check-then-set sequence on GLOBAL_STATE['task_running'] to prevent
+# two concurrent callers (e.g. SocketIO execute_task + REST api/execute_ssh) from
+# both seeing task_running=False and both starting a task.
+TASK_START_LOCK = threading.Lock()
+
+# --- Background Health Check Thread ---
+_HEALTH_CHECK_STOP = threading.Event()
+_HEALTH_CHECK_INTERVAL = 60  # seconds between checks
+
+
+def _background_health_check():
+    """
+    Daemon thread: checks SSH and LLM reachability every 60 s.
+
+    SSH check is skipped while a task is running to avoid competing with the
+    agent for network resources.  LLM check runs only for Ollama (cloud providers
+    are skipped to avoid unnecessary API calls / quota consumption).
+
+    Emits 'ssh_status_update' / 'llm_status_update' only when the status
+    actually changes, so the UI chips stay accurate without flooding the socket.
+    """
+    import copy
+
+    print(f"[HEALTH] Background health check thread started (interval={_HEALTH_CHECK_INTERVAL}s).", flush=True)
+
+    while not _HEALTH_CHECK_STOP.wait(_HEALTH_CHECK_INTERVAL):
+        try:
+            # ---- SSH check ----
+            if not GLOBAL_STATE.get('task_running', False):
+                prev_ssh = dict(GLOBAL_STATE['ssh_connection_status'])
+                cfg = get_config()
+                ip   = cfg.get('System', 'ip_address', fallback='').strip()
+                user = cfg.get('System', 'username',   fallback='').strip()
+
+                if not ip or not user:
+                    new_ssh = {'status': 'failure', 'message': 'System not configured.'}
+                else:
+                    ok, msg = ssh_utils.get_ssh_health()
+                    new_ssh = {'status': 'success' if ok else 'failure', 'message': msg}
+
+                if new_ssh != prev_ssh:
+                    GLOBAL_STATE['ssh_connection_status'] = new_ssh
+                    socketio.emit('ssh_status_update', new_ssh)
+                    print(f"[HEALTH] SSH status → {new_ssh['status']}: {new_ssh['message']}", flush=True)
+
+            # ---- LLM check (Ollama only) ----
+            cfg = get_config()
+            provider = cfg.get('General', 'provider', fallback='').strip()
+            if provider == 'ollama':
+                prev_llm = dict(GLOBAL_STATE['llm_connection_status'])
+                # Preserve existing chat_llm — health check should not recreate it
+                # (recreating mid-session causes unnecessary reinit logs and disrupts active chats)
+                existing_chat_llm = GLOBAL_STATE.get('chat_llm')
+                initialize_llm_status()
+                if existing_chat_llm is not None:
+                    GLOBAL_STATE['chat_llm'] = existing_chat_llm
+                new_llm = GLOBAL_STATE['llm_connection_status']
+                if new_llm != prev_llm:
+                    socketio.emit('llm_status_update', new_llm)
+                    print(f"[HEALTH] LLM status → {new_llm['status']}: {new_llm['message']}", flush=True)
+
+            # ---- Registry cleanup (BUG-1: memory leak) ----
+            # Remove completed/errored entries older than 2 hours
+            _registry_ttl = 7200
+            _now = time.time()
+            stale_chat = [
+                rid for rid, e in list(API_CHAT_REGISTRY.items())
+                if e.get('completed_at') and _now - e['completed_at'] > _registry_ttl
+            ]
+            for rid in stale_chat:
+                del API_CHAT_REGISTRY[rid]
+            if stale_chat:
+                print(f"[HEALTH] Cleaned {len(stale_chat)} stale API_CHAT_REGISTRY entries.", flush=True)
+
+            from agent_core import API_TASK_REGISTRY as _ATR
+            stale_tasks = [
+                tid for tid, e in list(_ATR.items())
+                if e.get('status') not in ('running',)
+                and e.get('start_time') and _now - e['start_time'] > _registry_ttl
+            ]
+            for tid in stale_tasks:
+                del _ATR[tid]
+            if stale_tasks:
+                print(f"[HEALTH] Cleaned {len(stale_tasks)} stale API_TASK_REGISTRY entries.", flush=True)
+
+            # ---- api_ui_locked auto-release (BUG-2: abandoned lock) ----
+            # If UI has been locked by API for >30min with no active task or chat, auto-release
+            if GLOBAL_STATE.get('api_ui_locked') and \
+               not GLOBAL_STATE.get('task_running') and \
+               not GLOBAL_STATE.get('api_chat_active'):
+                last_activity = GLOBAL_STATE.get('_api_last_activity', 0)
+                if _now - last_activity > 1800:
+                    GLOBAL_STATE['api_ui_locked'] = False
+                    GLOBAL_STATE['api_chat_active'] = False
+                    print("[HEALTH] api_ui_locked auto-released after 30min inactivity.", flush=True)
+                    socketio.emit('api_lock_status', {'active': False})
+
+        except Exception as e:
+            print(f"[HEALTH] Health check error: {e}", flush=True)
+
+    print("[HEALTH] Background health check thread stopped.", flush=True)
+
+
+def _start_health_check_thread():
+    """Start the background health check daemon thread (idempotent)."""
+    _HEALTH_CHECK_STOP.clear()
+    t = threading.Thread(target=_background_health_check, name='health-check', daemon=True)
+    t.start()
+
 
 # --- Flag-uri si Evenimente de Control pentru Thread-ul Agentului ---
 CONTROL_FLAGS = {
@@ -85,13 +205,33 @@ USER_RESPONSE = {}
 SUMMARIZATION_EVENT = threading.Event()
 USER_ANSWER_EVENT = threading.Event()
 USER_ANSWER = {}
+SYSTEM_SWITCH_EVENT = threading.Event()
+SYSTEM_SWITCH_RESPONSE = {}  # {'approved': bool, 'target_system': str}
+PENDING_SWITCH_TARGET = None  # Set when waiting for user approval, cleared on response
+PENDING_ASK_DATA = None  # Set when execution agent asks user, cleared on answer
+PENDING_APPROVAL_DATA = None  # Set when execution agent waits for command approval
+PENDING_TASK_PROPOSAL = None  # Set when chat agent proposes a task, cleared on accept/reject/new chat
+
+CONNECTED_UI_CLIENTS = set()   # SIDs of browser clients currently connected
+API_CHAT_REGISTRY = {}          # {request_id: {status, message, response, pending_type, pending_data, ...}}
+
+# Share events and pending flags via GLOBAL_STATE so agent_core can access them
+# without importing app module (which causes duplicate module instances in threading mode)
+GLOBAL_STATE['_switch_event'] = SYSTEM_SWITCH_EVENT
+GLOBAL_STATE['_switch_response'] = SYSTEM_SWITCH_RESPONSE
+GLOBAL_STATE['_pending_switch_target'] = None
+GLOBAL_STATE['_pending_ask_data'] = None
+GLOBAL_STATE['_pending_approval_data'] = None
+GLOBAL_STATE['_pending_task_proposal'] = None
 
 EVENT_OBJECTS = {
     "user_approval_event": USER_APPROVAL_EVENT,
     "user_response": USER_RESPONSE,
     "summarization_event": SUMMARIZATION_EVENT,
     "user_answer_event": USER_ANSWER_EVENT,
-    "user_answer": USER_ANSWER
+    "user_answer": USER_ANSWER,
+    "system_switch_event": SYSTEM_SWITCH_EVENT,
+    "system_switch_response": SYSTEM_SWITCH_RESPONSE
 }
 
 # --- Functie helper pentru setari sigure ---
@@ -102,6 +242,37 @@ def setattr_safe(key, val):
 # ---
 # --- Functii Helper ---
 # ---
+
+def _emit_knowledge_limit_warning(km):
+    """Emit a SocketIO warning if knowledge store is near or at capacity."""
+    try:
+        status = km.get_limit_status()
+        if status['at_limit']:
+            socketio.emit('knowledge_limit_warning', {
+                'level': 'full',
+                'count': status['count'],
+                'max': status['max'],
+                'message': f"Knowledge store is full ({status['count']}/{status['max']} documents). New documents cannot be added until existing ones are removed."
+            })
+        elif status['near_limit']:
+            socketio.emit('knowledge_limit_warning', {
+                'level': 'warning',
+                'count': status['count'],
+                'max': status['max'],
+                'message': f"Knowledge store almost full: {status['count']}/{status['max']} documents used. Consider removing unused documents."
+            })
+    except Exception:
+        pass
+
+
+def append_live_log(message):
+    """Append a message to the persistent agent live log on disk."""
+    try:
+        from config import AGENT_LIVE_LOG_PATH
+        with open(AGENT_LIVE_LOG_PATH, 'a', encoding='utf-8') as f:
+            f.write(message + '\n')
+    except Exception:
+        pass
 
 def save_app_state():
     """Salveaza starea aplicatiei pe disc."""
@@ -149,15 +320,17 @@ def perform_unified_search(query: str, reason: str = "General inquiry", summariz
                  results_summarized = search_results[:threshold_10_percent] + "...[truncated]"
             else:
                 # Initialize LLM for summarization
+                temperature = cfg.getfloat('Agent', 'temperature', fallback=0.5)
                 if provider == 'ollama':
                     api_url = cfg.get('Ollama', 'api_url', fallback='')
-                    llm = Ollama(model=model_name, base_url=api_url, timeout=60)
+                    keep_alive = cfg.get('Ollama', 'keep_alive', fallback='-1')
+                    llm = Ollama(model=model_name, base_url=api_url, timeout=60, temperature=temperature, keep_alive=keep_alive)
                 elif provider == 'gemini':
                     api_key = cfg.get('General', 'gemini_api_key', fallback='')
-                    llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, generation_config={"temperature": 0.5})
+                    llm = ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key, generation_config={"temperature": temperature})
                 elif provider == 'anthropic':
                     api_key = cfg.get('General', 'anthropic_api_key', fallback='')
-                    llm = ChatAnthropic(model=model_name, api_key=api_key, temperature=0.5)
+                    llm = ChatAnthropic(model=model_name, api_key=api_key, temperature=temperature)
 
                 # --- UPDATED PROMPT LOGIC ---
                 # Try to get the specific Search prompt first, fallback to generic Summarize
@@ -407,35 +580,45 @@ def initialize_llm_status():
 
         print(f"[CHAT LLM INIT] Provider: {chat_provider}, Model: {chat_model}", flush=True)
 
-        # Always read Ollama URL from main config to avoid Docker localhost issues
-        ollama_url = cfg.get('Ollama', 'api_url', fallback='http://localhost:11434')
+        # Use ChatLLM-specific Ollama URL if configured; fall back to main [Ollama] URL
+        chat_ollama_url = cfg.get('ChatLLM', 'ollama_url', fallback='').strip()
+        ollama_url = chat_ollama_url if chat_ollama_url else cfg.get('Ollama', 'api_url', fallback='http://localhost:11434')
+
+        temperature = cfg.getfloat('Agent', 'temperature', fallback=0.5)
+        llm_timeout = cfg.getint('Agent', 'llm_timeout', fallback=120)
 
         try:
             # Initialize chat LLM
             if chat_provider == 'ollama':
                 from langchain_community.llms import Ollama
                 print(f"[CHAT LLM INIT] Creating Ollama instance: model={chat_model}, url={ollama_url}", flush=True)
-                GLOBAL_STATE['chat_llm'] = Ollama(model=chat_model, base_url=ollama_url, timeout=120)
-                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Ollama ({chat_model}) on {ollama_url}", flush=True)
+                ollama_num_ctx = cfg.getint('Ollama', 'num_ctx', fallback=32768)
+                keep_alive = cfg.get('Ollama', 'keep_alive', fallback='-1')
+                GLOBAL_STATE['chat_llm'] = Ollama(model=chat_model, base_url=ollama_url, timeout=llm_timeout, num_ctx=ollama_num_ctx, temperature=temperature, keep_alive=keep_alive)
+                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Ollama ({chat_model}) on {ollama_url}, num_ctx={ollama_num_ctx}, temp={temperature}, timeout={llm_timeout}s", flush=True)
             elif chat_provider == 'gemini':
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 print(f"[CHAT LLM INIT] Creating Gemini instance: model={chat_model}", flush=True)
                 GLOBAL_STATE['chat_llm'] = ChatGoogleGenerativeAI(
                     model=chat_model,
                     google_api_key=chat_api_key,
-                    generation_config={"temperature": 0.6},
-                    convert_system_message_to_human=True
+                    generation_config={"temperature": temperature},
+                    convert_system_message_to_human=True,
+                    timeout=llm_timeout,
+                    request_timeout=llm_timeout
                 )
-                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Gemini ({chat_model})", flush=True)
+                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Gemini ({chat_model}), temp={temperature}, timeout={llm_timeout}s", flush=True)
             elif chat_provider == 'anthropic':
                 from langchain_anthropic import ChatAnthropic
                 print(f"[CHAT LLM INIT] Creating Anthropic instance: model={chat_model}", flush=True)
                 GLOBAL_STATE['chat_llm'] = ChatAnthropic(
                     model=chat_model,
                     api_key=chat_api_key,
-                    temperature=0.6
+                    temperature=temperature,
+                    timeout=llm_timeout,
+                    default_request_timeout=llm_timeout
                 )
-                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Anthropic ({chat_model})", flush=True)
+                print(f"[CHAT LLM INIT] ✓ Chat LLM initialized: Anthropic ({chat_model}), temp={temperature}, timeout={llm_timeout}s", flush=True)
             else:
                 print(f"[CHAT LLM INIT] ✗ Unknown chat provider: {chat_provider}. Using shared LLM for chat.", flush=True)
                 GLOBAL_STATE['chat_llm'] = None  # Will fallback to main LLM
@@ -446,6 +629,32 @@ def initialize_llm_status():
     else:
         print("[CHAT LLM INIT] Using shared LLM for both execution and chat.", flush=True)
         GLOBAL_STATE['chat_llm'] = None  # Will fallback to main LLM in process_chat_message
+
+    # --- Chat LLM Failback initialization ---
+    GLOBAL_STATE['_chat_llm_fallback'] = None
+    GLOBAL_STATE['_using_chat_fallback'] = False
+    if cfg.getboolean('ChatLLMFallback', 'enabled', fallback=False):
+        fb_model = cfg.get('ChatLLMFallback', 'model_name', fallback='').strip()
+        fb_provider = cfg.get('ChatLLMFallback', 'provider', fallback='ollama')
+        if fb_model:
+            try:
+                fb_timeout = cfg.getint('Agent', 'llm_timeout', fallback=120)
+                fb_temp = cfg.getfloat('Agent', 'temperature', fallback=0.5)
+                fb_num_ctx = cfg.getint('Ollama', 'num_ctx', fallback=32768)
+                fb_keep_alive = cfg.get('Ollama', 'keep_alive', fallback='-1')
+                if fb_provider == 'ollama':
+                    fb_url = cfg.get('ChatLLMFallback', 'ollama_url', fallback='').strip() or cfg.get('Ollama', 'api_url', fallback='http://localhost:11434')
+                    GLOBAL_STATE['_chat_llm_fallback'] = Ollama(model=fb_model, base_url=fb_url, timeout=fb_timeout, num_ctx=fb_num_ctx, temperature=fb_temp, keep_alive=fb_keep_alive)
+                elif fb_provider == 'gemini':
+                    fb_key = cfg.get('ChatLLMFallback', 'api_key', fallback='').strip() or cfg.get('General', 'gemini_api_key', fallback='')
+                    GLOBAL_STATE['_chat_llm_fallback'] = ChatGoogleGenerativeAI(model=fb_model, google_api_key=fb_key, generation_config={"temperature": fb_temp})
+                elif fb_provider == 'anthropic':
+                    fb_key = cfg.get('ChatLLMFallback', 'api_key', fallback='').strip() or cfg.get('General', 'anthropic_api_key', fallback='')
+                    GLOBAL_STATE['_chat_llm_fallback'] = ChatAnthropic(model=fb_model, api_key=fb_key, temperature=fb_temp)
+                if GLOBAL_STATE['_chat_llm_fallback']:
+                    print(f"[CHAT LLM FAILBACK] ✓ Chat fallback ready: {fb_provider}/{fb_model}", flush=True)
+            except Exception as fb_err:
+                print(f"[CHAT LLM FAILBACK] ✗ Could not init chat failback: {fb_err}", flush=True)
 
 # ---
 # --- Rute Flask (Pagini Principale) ---
@@ -475,12 +684,37 @@ def get_agent_config():
     cfg = get_config()
 
     # Load Chat LLM configuration if exists
+    # ollama_url key migration: old configs may have stored it as 'ollama_api_url'
+    _chat_ollama_url = (cfg.get('ChatLLM', 'ollama_url', fallback='') or
+                        cfg.get('ChatLLM', 'ollama_api_url', fallback=''))
     chat_llm_config = {
         'enabled': cfg.getboolean('ChatLLM', 'enabled', fallback=False),
         'provider': cfg.get('ChatLLM', 'provider', fallback='ollama'),
         'model_name': cfg.get('ChatLLM', 'model_name', fallback=''),
-        'api_key': cfg.get('ChatLLM', 'api_key', fallback='')
+        'api_key': (cfg.get('ChatLLM', 'api_key', fallback='') or
+                    cfg.get('ChatLLM', 'gemini_api_key', fallback='') or
+                    cfg.get('ChatLLM', 'anthropic_api_key', fallback='')),
+        'ollama_url': _chat_ollama_url
     }
+
+    # Load Knowledge configuration if exists
+    knowledge_config = {
+        'enabled': cfg.getboolean('Knowledge', 'enabled', fallback=False),
+        'embedding_provider': cfg.get('Knowledge', 'embedding_provider', fallback='ollama'),
+        'embedding_model': cfg.get('Knowledge', 'embedding_model', fallback=''),
+        'vector_store': cfg.get('Knowledge', 'vector_store', fallback='chromadb'),
+        'max_documents': cfg.getint('Knowledge', 'max_documents', fallback=10),
+        'max_file_size_mb': cfg.getint('Knowledge', 'max_file_size_mb', fallback=50),
+    }
+
+    def _llm_section_config(section):
+        return {
+            'enabled': cfg.getboolean(section, 'enabled', fallback=False),
+            'provider': cfg.get(section, 'provider', fallback='ollama'),
+            'model_name': cfg.get(section, 'model_name', fallback=''),
+            'api_key': cfg.get(section, 'api_key', fallback=''),
+            'ollama_url': cfg.get(section, 'ollama_url', fallback='')
+        }
 
     return jsonify({
         'provider': cfg.get('General', 'provider', fallback='ollama'),
@@ -488,11 +722,20 @@ def get_agent_config():
         'gemini_api_key': cfg.get('General', 'gemini_api_key', fallback=''),
         'anthropic_api_key': cfg.get('General', 'anthropic_api_key', fallback=''),
         'ollama_api_url': cfg.get('Ollama', 'api_url', fallback='http://localhost:11434'),
+        'ollama_num_ctx': cfg.getint('Ollama', 'num_ctx', fallback=32768),
+        'ollama_keep_alive': cfg.get('Ollama', 'keep_alive', fallback='-1'),
         'max_steps': cfg.getint('Agent', 'max_steps', fallback=50),
         'summarization_threshold': cfg.getint('Agent', 'summarization_threshold', fallback=15000),
         'llm_timeout': cfg.getint('Agent', 'llm_timeout', fallback=120),
         'chat_history_message_count': cfg.getint('Agent', 'chat_history_message_count', fallback=20),
-        'chat_llm': chat_llm_config
+        'temperature': cfg.getfloat('Agent', 'temperature', fallback=0.5),
+        'command_timeout': cfg.getint('Agent', 'command_timeout', fallback=300),
+        'chat_llm': chat_llm_config,
+        'knowledge': knowledge_config,
+        'validator_llm': _llm_section_config('ValidatorLLM'),
+        'exec_llm_fallback': _llm_section_config('ExecLLMFallback'),
+        'chat_llm_fallback': _llm_section_config('ChatLLMFallback'),
+        'validator_llm_fallback': _llm_section_config('ValidatorLLMFallback'),
     })
 
 @app.route('/save_agent_config', methods=['POST'])
@@ -511,6 +754,9 @@ def save_agent_config():
         cfg.set('Agent', 'llm_timeout', str(data.get('llm_timeout', 120)))
         cfg.set('Agent', 'chat_history_message_count', str(data.get('chat_history_message_count', 20)))
         cfg.set('Ollama', 'api_url', data.get('ollama_api_url', ''))
+        cfg.set('Ollama', 'num_ctx', str(data.get('ollama_num_ctx', 32768)))
+        cfg.set('Ollama', 'keep_alive', str(data.get('ollama_keep_alive', '-1')))
+        cfg.set('Agent', 'temperature', str(data.get('temperature', 0.5)))
 
         # Save Chat LLM Configuration
         if 'chat_llm' in data:
@@ -521,6 +767,37 @@ def save_agent_config():
             cfg.set('ChatLLM', 'provider', chat_llm.get('provider', 'ollama'))
             cfg.set('ChatLLM', 'model_name', chat_llm.get('model_name', ''))
             cfg.set('ChatLLM', 'api_key', chat_llm.get('api_key', ''))
+            cfg.set('ChatLLM', 'ollama_url', chat_llm.get('ollama_url', ''))
+
+        # Save Knowledge Configuration
+        if 'knowledge' in data:
+            if not cfg.has_section('Knowledge'):
+                cfg.add_section('Knowledge')
+            knowledge = data['knowledge']
+            cfg.set('Knowledge', 'enabled', str(knowledge.get('enabled', False)))
+            cfg.set('Knowledge', 'embedding_provider', knowledge.get('embedding_provider', 'ollama'))
+            cfg.set('Knowledge', 'embedding_model', knowledge.get('embedding_model', ''))
+            cfg.set('Knowledge', 'vector_store', knowledge.get('vector_store', 'chromadb'))
+            cfg.set('Knowledge', 'max_documents', str(knowledge.get('max_documents', 10)))
+            cfg.set('Knowledge', 'max_file_size_mb', str(knowledge.get('max_file_size_mb', 50)))
+
+        def _save_llm_section(section, d):
+            if not cfg.has_section(section):
+                cfg.add_section(section)
+            cfg.set(section, 'enabled', str(d.get('enabled', False)))
+            cfg.set(section, 'provider', d.get('provider', 'ollama'))
+            cfg.set(section, 'model_name', d.get('model_name', ''))
+            cfg.set(section, 'api_key', d.get('api_key', ''))
+            cfg.set(section, 'ollama_url', d.get('ollama_url', ''))
+
+        if 'validator_llm' in data:
+            _save_llm_section('ValidatorLLM', data['validator_llm'])
+        if 'exec_llm_fallback' in data:
+            _save_llm_section('ExecLLMFallback', data['exec_llm_fallback'])
+        if 'chat_llm_fallback' in data:
+            _save_llm_section('ChatLLMFallback', data['chat_llm_fallback'])
+        if 'validator_llm_fallback' in data:
+            _save_llm_section('ValidatorLLMFallback', data['validator_llm_fallback'])
 
         with open(CONFIG_FILE_PATH, 'w') as f:
             cfg.write(f)
@@ -528,6 +805,9 @@ def save_agent_config():
         # Re-testam conexiunea
         initialize_llm_status()
         socketio.emit('llm_status_update', GLOBAL_STATE['llm_connection_status'])
+
+        # Reinitialize Knowledge Manager if config changed
+        initialize_knowledge_manager()
 
         return jsonify({'status': 'success', 'message': 'Configuration saved!'})
     except Exception as e:
@@ -588,8 +868,8 @@ def get_models_route():
         models = []
 
         if provider == 'ollama':
-            # Use URL from main config
-            url = cfg.get('Ollama', 'api_url', fallback='http://localhost:11434')
+            # Use URL from request if provided (e.g. chat LLM with different server), else main config
+            url = data.get('ollama_url', '').strip() or cfg.get('Ollama', 'api_url', fallback='http://localhost:11434')
             success, msg, models = llm_utils.check_ollama_connection(url)
 
         elif provider == 'gemini':
@@ -619,6 +899,39 @@ def get_models_route():
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+@app.route('/get_embedding_models', methods=['POST'])
+def get_embedding_models_route():
+    """Fetches available embedding models for the specified provider."""
+    try:
+        data = request.json
+        provider = data.get('provider', 'ollama')
+
+        cfg = get_config()
+        models = []
+
+        if provider == 'ollama':
+            url = cfg.get('Ollama', 'api_url', fallback='http://localhost:11434')
+            success, msg, models = llm_utils.check_ollama_embedding_models(url)
+
+        elif provider == 'gemini':
+            key = cfg.get('General', 'gemini_api_key', fallback='')
+            if not key:
+                return jsonify({'status': 'error', 'message': 'Gemini API Key not configured. Set it in the Execution LLM section first.'})
+            success, msg, models = llm_utils.check_gemini_embedding_models(key)
+
+        else:
+            return jsonify({'status': 'error', 'message': f'Embedding not supported for provider: {provider}'})
+
+        return jsonify({
+            'status': 'success' if success else 'error',
+            'models': models,
+            'message': msg
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
 @app.route('/get_system_config')
 def get_system_config():
     """Returneaza configuratia sistemului tinta si conexiunile salvate."""
@@ -629,6 +942,11 @@ def get_system_config():
         'username': cfg.get('System', 'username', fallback=''),
         'ssh_port': cfg.getint('System', 'ssh_port', fallback=22),
         'ssh_key_path': cfg.get('System', 'ssh_key_path', fallback='/app/keys/id_rsa'),
+        'system_name': cfg.get('System', 'system_name', fallback=''),  # Friendly name
+        'auth_method': cfg.get('System', 'auth_method', fallback='key'),  # key, password, key_or_password
+        'auth_password': cfg.get('System', 'auth_password', fallback=''),  # Stored password for SSH auth
+        'device_type': cfg.get('System', 'device_type', fallback='linux'),  # linux, windows, cisco, etc.
+        'enable_password': cfg.get('System', 'enable_password', fallback=''),  # Cisco enable/secret password
         'saved_connections': connections
     })
 
@@ -638,49 +956,100 @@ def save_system_config():
     try:
         data = request.json
         cfg = get_config()
-        
+
         ip = data['ip_address'].strip()
         username = data['username'].strip()
         ssh_port = data.get('ssh_port', 22)
         ssh_key_path = data.get('ssh_key_path', '/app/keys/id_rsa').strip()
+        # NEW: Get friendly name (alias) for the connection
+        system_name = data.get('system_name', '').strip()
+        # NEW: Authentication method and password
+        auth_method = data.get('auth_method', 'key').strip()  # key, password, key_or_password
+        auth_password = data.get('auth_password', '')  # Password for SSH auth (not deployment)
+        # NEW: Device type and enable password
+        device_type = data.get('device_type', 'linux').strip()  # linux, windows, cisco, nxos, etc.
+        enable_password = data.get('enable_password', '')  # Cisco enable/secret password
 
         if not ip or not username:
             return jsonify({'status': 'error', 'message': 'IP and Username are required.'}), 400
+
+        # Validate auth settings
+        if auth_method in ['password', 'key_or_password'] and not auth_password:
+            return jsonify({'status': 'error', 'message': 'Password is required for the selected authentication method.'}), 400
+
+        # IMPROVED: Read previous values from config.ini BEFORE modifying (fallback to GLOBAL_STATE)
+        # This ensures we capture the previous connection even on first app load
+        previous_username = cfg.get('System', 'username', fallback='') or GLOBAL_STATE.get('system_username', '')
+        previous_ip = cfg.get('System', 'ip_address', fallback='') or GLOBAL_STATE.get('system_ip', '')
+        previous_name = cfg.get('System', 'system_name', fallback='') or GLOBAL_STATE.get('system_name', '')
 
         # Salvam in config.ini
         cfg.set('System', 'ip_address', ip)
         cfg.set('System', 'username', username)
         cfg.set('System', 'ssh_port', str(ssh_port))
         cfg.set('System', 'ssh_key_path', ssh_key_path)
-        
+        cfg.set('System', 'auth_method', auth_method)
+        cfg.set('System', 'auth_password', auth_password)  # Note: Consider encryption for production
+        cfg.set('System', 'device_type', device_type)
+        cfg.set('System', 'enable_password', enable_password)
+        # Store current system name for display
+        if system_name:
+            cfg.set('System', 'system_name', system_name)
+
         with open(CONFIG_FILE_PATH, 'w') as f:
             cfg.write(f)
-
-        # Salvam valorile anterioare pentru logging
-        previous_username = GLOBAL_STATE.get('system_username', '')
-        previous_ip = GLOBAL_STATE.get('system_ip', '')
 
         # Actualizam GLOBAL_STATE
         GLOBAL_STATE['system_ip'] = ip
         GLOBAL_STATE['system_username'] = username
+        GLOBAL_STATE['system_name'] = system_name  # Store friendly name
 
-        # Log SSH connection change to Full Log (single source of truth)
+        # Log SSH connection change to Full Log AND LLM Context (single source of truth)
+        # Only log if there's an actual change (different IP or username)
+        is_actual_change = (previous_ip != ip) or (previous_username != username)
+
+        # Drop persistent SSH connection whenever the target system changes
+        if is_actual_change:
+            ssh_utils.close_persistent_client()
+
         log_manager = GLOBAL_STATE.get('log_manager')
-        if log_manager:
-            log_manager.log_ssh_connection_change(username, ip, previous_username, previous_ip)
-            print(f"SSH connection change logged: {previous_username}@{previous_ip} -> {username}@{ip}")
+        if log_manager and is_actual_change:
+            log_manager.log_ssh_connection_change(username, ip, previous_username, previous_ip, system_name)
+            # Track last logged system to prevent duplicate entries from agent_core
+            GLOBAL_STATE['last_logged_system'] = {'username': username, 'ip': ip, 'name': system_name}
+            if previous_ip and previous_username:
+                print(f"SSH connection change logged: {previous_name or previous_username}@{previous_ip} -> {system_name or username}@{ip}")
+            else:
+                print(f"SSH connection logged: {system_name or username}@{ip} (first connection)")
+        elif log_manager and not is_actual_change:
+            print(f"SSH connection unchanged: {system_name or username}@{ip} (no log entry needed)")
 
         # Salvam in connections.json (istoric)
         connections = session_manager.load_connections()
-        
-        # Verificam daca conexiunea exista deja
+
+        # Verificam daca conexiunea exista deja (by IP, username, port)
         existing = next((c for c in connections if c['ip'] == ip and c['username'] == username and c.get('port', 22) == ssh_port), None)
-        if not existing:
+        if existing:
+            # Update the existing connection's name and auth settings
+            if system_name:
+                existing['name'] = system_name
+            existing['auth_method'] = auth_method
+            existing['auth_password'] = auth_password
+            existing['device_type'] = device_type
+            existing['enable_password'] = enable_password
+            session_manager.save_connections(connections)
+        else:
+            # Add new connection with friendly name and auth settings
             connections.append({
+                'name': system_name or f"{username}@{ip}",  # Default to user@ip if no name
                 'ip': ip,
                 'username': username,
                 'port': ssh_port,
                 'ssh_key_path': ssh_key_path,
+                'auth_method': auth_method,
+                'auth_password': auth_password,
+                'device_type': device_type,
+                'enable_password': enable_password,
                 'added_at': datetime.now().isoformat()
             })
             session_manager.save_connections(connections)
@@ -707,6 +1076,97 @@ def delete_connection():
         
         session_manager.save_connections(connections)
         return jsonify({'status': 'success'})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/get_validator_whitelist')
+def get_validator_whitelist():
+    """Return the validator whitelist for the given or currently active system.
+    Optional query param: ?system_name=<name> to load whitelist for a specific system.
+    """
+    requested = request.args.get('system_name', '').strip()
+    if requested:
+        system_name = requested
+    else:
+        cfg = get_config()
+        system_name = cfg.get('System', 'system_name', fallback='').strip()
+    whitelist = agent_core._load_validator_whitelist()
+    return jsonify({
+        'system_name': system_name,
+        'commands': whitelist.get(system_name, []),
+        'all_systems': list(whitelist.keys())
+    })
+
+@app.route('/save_validator_whitelist', methods=['POST'])
+def save_validator_whitelist():
+    """Save (replace) the whitelist for a specific system."""
+    try:
+        data = request.json or {}
+        system_name = data.get('system_name', '').strip()
+        commands = data.get('commands', [])
+        if not isinstance(commands, list):
+            return jsonify({'status': 'error', 'message': 'commands must be a list'}), 400
+        whitelist = agent_core._load_validator_whitelist()
+        cleaned = [c.strip() for c in commands if c.strip()]
+        if cleaned:
+            whitelist[system_name] = cleaned
+        elif system_name in whitelist:
+            del whitelist[system_name]
+        agent_core._save_validator_whitelist(whitelist)
+        return jsonify({'status': 'success', 'count': len(cleaned)})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/export_connections')
+def export_connections():
+    """Export saved connections as JSON file for download."""
+    try:
+        connections = session_manager.load_connections()
+        response = jsonify(connections)
+        response.headers['Content-Disposition'] = 'attachment; filename=connections.json'
+        response.headers['Content-Type'] = 'application/json'
+        return response
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/import_connections', methods=['POST'])
+def import_connections():
+    """Import connections from uploaded JSON. Validates format before saving."""
+    try:
+        data = request.json
+        connections = data.get('connections', [])
+
+        # Validate: must be a list
+        if not isinstance(connections, list):
+            return jsonify({'status': 'error', 'message': 'Invalid format: expected array'}), 400
+
+        # Validate each connection
+        required_fields = ['ip', 'username']
+        for i, conn in enumerate(connections):
+            if not isinstance(conn, dict):
+                return jsonify({'status': 'error', 'message': f'Invalid connection at index {i}: not an object'}), 400
+            for field in required_fields:
+                if field not in conn or not isinstance(conn[field], str) or not conn[field].strip():
+                    return jsonify({'status': 'error', 'message': f'Invalid connection at index {i}: missing or invalid "{field}"'}), 400
+
+        # Normalize connections (ensure all have expected fields)
+        normalized = []
+        for conn in connections:
+            normalized.append({
+                'name': conn.get('name', f"{conn['username']}@{conn['ip']}"),
+                'ip': conn['ip'].strip(),
+                'username': conn['username'].strip(),
+                'port': conn.get('port', 22),
+                'ssh_key_path': conn.get('ssh_key_path', '/app/keys/id_rsa'),
+                'added_at': conn.get('added_at', datetime.now().isoformat())
+            })
+
+        # Save the imported connections (replaces existing)
+        session_manager.save_connections(normalized)
+
+        return jsonify({'status': 'success', 'count': len(normalized)})
     except Exception as e:
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -973,18 +1433,15 @@ def load_session():
             if loaded_state_data:
                 global GLOBAL_STATE
 
-                # --- FIX: Protect log_manager from being overwritten by a string ---
-                # The JSON save converts objects to strings. We must NOT overwrite
-                # the live LogManager object with that string.
-                if 'log_manager' in loaded_state_data:
-                    del loaded_state_data['log_manager']
-                # -----------------------------------------------------------------
+                # --- Remove non-serializable keys that may have leaked into saved state ---
+                for key in ('log_manager', 'chat_llm', 'knowledge_manager', 'web_search_status'):
+                    if key in loaded_state_data:
+                        del loaded_state_data[key]
 
                 GLOBAL_STATE.update(loaded_state_data)
                 print("Global State memory updated from session file.")
 
                 # 3. Update Log Manager RAM
-                # Ensure the object exists and is valid
                 if 'log_manager' not in GLOBAL_STATE or not hasattr(GLOBAL_STATE['log_manager'], 'reload_state'):
                     print("Log Manager instance missing or invalid. Re-initializing...")
                     initialize_log_system()
@@ -992,6 +1449,28 @@ def load_session():
                 log_manager = GLOBAL_STATE.get('log_manager')
                 if log_manager:
                     log_manager.reload_state()
+
+                # 4. Re-initialize subsystems from restored config
+                print("[SESSION RESTORE] Re-initializing subsystems...")
+                initialize_ssh_status()
+                initialize_llm_status()
+                initialize_knowledge_manager()
+
+                # 5. Update last_logged_system from restored config
+                cfg = get_config()
+                restored_ip = cfg.get('System', 'ip_address', fallback='').strip()
+                restored_user = cfg.get('System', 'username', fallback='').strip()
+                restored_name = cfg.get('System', 'system_name', fallback='').strip()
+                if restored_ip and restored_user:
+                    GLOBAL_STATE['last_logged_system'] = {
+                        'username': restored_user,
+                        'ip': restored_ip,
+                        'name': restored_name
+                    }
+                    GLOBAL_STATE['system_ip'] = restored_ip
+                    GLOBAL_STATE['system_username'] = restored_user
+                    GLOBAL_STATE['system_name'] = restored_name
+                print("[SESSION RESTORE] Subsystems re-initialized successfully.")
 
                 # Cleanup
                 if os.path.exists(temp_path):
@@ -1024,7 +1503,25 @@ def get_prompts():
 
     data = {}
 
-    if mode == 'chat':
+    if mode == 'system_messages':
+        data['task_completed'] = cfg.get('SystemMessages', 'task_completed', fallback='')
+        data['search_completed'] = cfg.get('SystemMessages', 'search_completed', fallback='')
+        data['knowledge_completed'] = cfg.get('SystemMessages', 'knowledge_completed', fallback='')
+        data['switch_timeout'] = cfg.get('SystemMessages', 'switch_timeout', fallback='')
+        data['switch_approved'] = cfg.get('SystemMessages', 'switch_approved', fallback='')
+        data['switch_denied'] = cfg.get('SystemMessages', 'switch_denied', fallback='')
+        data['web_search_completed'] = cfg.get('SystemMessages', 'web_search_completed', fallback='')
+        data['web_search_completed_injected'] = cfg.get('SystemMessages', 'web_search_completed_injected', fallback='')
+        data['web_search_completed_attached'] = cfg.get('SystemMessages', 'web_search_completed_attached', fallback='')
+    elif mode == 'websearch_injection':
+        data['websearch_injection'] = cfg.get('WebSearchInjection', 'template', fallback='')
+    elif mode == 'report_validator':
+        data['ollama_prompt'] = cfg.get('OllamaValidateReportPrompt', 'template', fallback='')
+        data['cloud_prompt'] = cfg.get('CloudValidateReportPrompt', 'template', fallback='')
+    elif mode == 'knowledge':
+        knowledge_prompt = cfg.get('KnowledgePrompt', 'template', fallback='')
+        data['knowledge_prompt'] = knowledge_prompt
+    elif mode == 'chat':
         # Chat mode only has one prompt
         chat_prompt = cfg.get('ChatPrompt', 'template', fallback='')
         data['chat_prompt'] = chat_prompt
@@ -1069,7 +1566,35 @@ def save_prompts():
         cfg = get_config()
         mode = request.form.get('mode', 'standard')
 
-        if mode == 'chat':
+        if mode == 'system_messages':
+            if not cfg.has_section('SystemMessages'): cfg.add_section('SystemMessages')
+            for key in ['task_completed', 'search_completed', 'knowledge_completed', 'switch_timeout', 'switch_approved', 'switch_denied', 'web_search_completed', 'web_search_completed_injected', 'web_search_completed_attached']:
+                value = request.form.get(key, '')
+                cfg.set('SystemMessages', key, value)
+
+        elif mode == 'websearch_injection':
+            ws_injection = request.form.get('websearch_injection', '')
+            if not cfg.has_section('WebSearchInjection'): cfg.add_section('WebSearchInjection')
+            cfg.set('WebSearchInjection', 'template', ws_injection)
+
+        elif mode == 'report_validator':
+            ollama_prompt = request.form.get('ollama_prompt', '')
+            cloud_prompt = request.form.get('cloud_prompt', '')
+            if not cfg.has_section('OllamaValidateReportPrompt'): cfg.add_section('OllamaValidateReportPrompt')
+            cfg.set('OllamaValidateReportPrompt', 'template', ollama_prompt)
+            if not cfg.has_section('CloudValidateReportPrompt'): cfg.add_section('CloudValidateReportPrompt')
+            cfg.set('CloudValidateReportPrompt', 'template', cloud_prompt)
+
+        elif mode == 'knowledge':
+            knowledge_prompt = request.form.get('knowledge_prompt', '')
+            # Validate: must contain {documents}
+            if '{documents}' not in knowledge_prompt:
+                return jsonify({'status': 'error', 'message': 'Knowledge template must contain {documents} variable.'}), 400
+
+            if not cfg.has_section('KnowledgePrompt'): cfg.add_section('KnowledgePrompt')
+            cfg.set('KnowledgePrompt', 'template', knowledge_prompt)
+
+        elif mode == 'chat':
             chat_prompt = request.form.get('chat_prompt')
             is_valid, msg = validate_prompt(chat_prompt, 'chat')
             if not is_valid:
@@ -1296,12 +1821,17 @@ def export_prompts():
             'CloudPromptWithAsk',
             'OllamaValidatePrompt',
             'CloudValidatePrompt',
+            'OllamaValidateReportPrompt',
+            'CloudValidateReportPrompt',
             'OllamaSummarizePrompt',
             'CloudSummarizePrompt',
             'OllamaStepSummaryPrompt',
             'CloudStepSummaryPrompt',
             'OllamaSearchSummaryPrompt',
-            'CloudSearchSummaryPrompt'
+            'CloudSearchSummaryPrompt',
+            'KnowledgePrompt',
+            'WebSearchPrompt',
+            'WebSearchInjection'
         ]
 
         # Create ZIP in memory
@@ -1331,6 +1861,47 @@ def export_prompts():
     except Exception as e:
         traceback.print_exc()
         return jsonify({'status': 'error', 'message': f'Error exporting prompts: {e}'}), 500
+
+@app.route('/export_chat', methods=['POST'])
+def export_chat():
+    """Export selected chat messages as PDF or DOCX with markdown formatting."""
+    try:
+        data = request.json
+        messages = data.get('messages', [])
+        format_type = data.get('format', 'pdf')
+        theme = data.get('theme', 'dark')
+
+        if not messages:
+            return jsonify({'status': 'error', 'message': 'No messages to export'}), 400
+
+        if format_type not in ('pdf', 'docx'):
+            return jsonify({'status': 'error', 'message': 'Invalid format. Use pdf or docx.'}), 400
+
+        if theme not in ('dark', 'light'):
+            return jsonify({'status': 'error', 'message': 'Invalid theme. Use dark or light.'}), 400
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        if format_type == 'pdf':
+            buffer = chat_export.generate_pdf(messages, theme)
+            return send_file(
+                buffer,
+                mimetype='application/pdf',
+                as_attachment=True,
+                download_name=f'chat_export_{timestamp}.pdf'
+            )
+        else:
+            buffer = chat_export.generate_docx(messages, theme)
+            return send_file(
+                buffer,
+                mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                as_attachment=True,
+                download_name=f'chat_export_{timestamp}.docx'
+            )
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': f'Export failed: {e}'}), 500
 
 @app.route('/import_prompts', methods=['POST'])
 def import_prompts():
@@ -1400,15 +1971,31 @@ def import_prompts():
 # --- Handler-e SocketIO (Logica in Timp Real) ---
 # ---
 
+def _is_chat_processing():
+    """Check if the chat LLM is currently processing a message."""
+    try:
+        from agent_core import _chat_processing_lock
+        return _chat_processing_lock.locked()
+    except Exception:
+        return False
+
 @socketio.on('connect')
-def handle_connect():
+def handle_connect(auth=None):
     """Gestioneaza o noua conexiune client (ex: deschiderea paginii, refresh)."""
     global GLOBAL_STATE
+    CONNECTED_UI_CLIENTS.add(request.sid)
     print(f"Client connected: {request.sid}")
     
     # Trimite starea *curenta* (inclusiv din task-ul care ruleaza)
     try:
-        # CORECTIE LOG: Trimitem log-ul parsat pentru vizualizarea 'Live'
+        # Flush write buffer before reading state — ensures reconnecting browser
+        # gets the complete log even if a buffered write hasn't hit disk yet.
+        log_manager_for_flush = GLOBAL_STATE.get('log_manager')
+        if log_manager_for_flush:
+            log_manager_for_flush.flush()
+
+        # Always filter the log for initial display — parse_command_log extracts
+        # the relevant lines (STEP, REASON, COMMAND, ERROR, etc.) from the raw log
         filtered_log = agent_core.parse_command_log(GLOBAL_STATE['last_session']['log'])
 
         raw_responses = "\n\n".join([f"-- Resp {i+1} --\n{r}" for i, r in enumerate(GLOBAL_STATE['last_session'].get("raw_llm_responses", []))])
@@ -1426,14 +2013,65 @@ def handle_connect():
             'task_running': GLOBAL_STATE['task_running'],
             'task_paused': GLOBAL_STATE['task_paused'],
             'validator_enabled': GLOBAL_STATE.get('validator_enabled', True),
-            'chat_history': chat_history  # NEW FIELD
+            'chat_history': chat_history,
+            # Session snapshot: UI state sync
+            'current_objective': GLOBAL_STATE.get('current_objective', ''),
+            'current_execution_mode': GLOBAL_STATE.get('current_execution_mode', 'independent'),
+            'current_allow_ask_mode': GLOBAL_STATE.get('current_allow_ask_mode', False),
+            'current_summarization_mode': GLOBAL_STATE.get('current_summarization_mode', 'automatic'),
+            'command_timeout': GLOBAL_STATE.get('command_timeout', 300)
         }
         socketio.emit('initial_state', initial_data, to=request.sid)
         
         # Trimitem si statusurile curente
         socketio.emit('ssh_status_update', GLOBAL_STATE['ssh_connection_status'], to=request.sid)
         socketio.emit('llm_status_update', GLOBAL_STATE['llm_connection_status'], to=request.sid)
-        
+
+        # Re-emit pending modals if agent is waiting for user interaction
+        # Skip switch proposals when in API mode — the API client handles them via HTTP polling
+        pending_switch = GLOBAL_STATE.get('_pending_switch_target')
+        if pending_switch and not GLOBAL_STATE.get('api_ui_locked'):
+            # _pending_switch_target is now a dict {target_system, reason} or legacy string
+            if isinstance(pending_switch, dict):
+                ps_target = pending_switch.get('target_system', '')
+                ps_reason = pending_switch.get('reason', '')
+            else:
+                ps_target = pending_switch
+                ps_reason = ''
+            print(f"[CONNECT] Re-emitting pending switch proposal for: {ps_target}", flush=True)
+            socketio.emit('chat_switch_proposal', {'target_system': ps_target, 'reason': ps_reason}, to=request.sid)
+            socketio.emit('chat_status', {'status': f'awaiting approval for switch to {ps_target}'}, to=request.sid)
+
+        pending_ask = GLOBAL_STATE.get('_pending_ask_data')
+        if pending_ask:
+            print(f"[CONNECT] Re-emitting pending ASK modal", flush=True)
+            socketio.emit('awaiting_user_answer', pending_ask, to=request.sid)
+
+        pending_approval = GLOBAL_STATE.get('_pending_approval_data')
+        if pending_approval:
+            print(f"[CONNECT] Re-emitting pending command approval modal", flush=True)
+            socketio.emit('awaiting_command_approval', pending_approval, to=request.sid)
+
+        pending_task = GLOBAL_STATE.get('_pending_task_proposal')
+        if pending_task and not GLOBAL_STATE.get('api_ui_locked'):
+            print(f"[CONNECT] Re-emitting pending task proposal", flush=True)
+            socketio.emit('chat_task_proposal', {'objective': pending_task}, to=request.sid)
+
+        # Reset chat status to idle if no chat is currently processing
+        if not _is_chat_processing():
+            socketio.emit('chat_status', {'status': 'idle'}, to=request.sid)
+
+        # Always emit current control mode so banner shows correctly on connect/reconnect
+        socketio.emit('api_session_status',
+                      {'active': bool(GLOBAL_STATE.get('api_ui_locked', False))},
+                      to=request.sid)
+
+        # Emit current auto-flag state so browser checkboxes stay in sync with server
+        socketio.emit('auto_flags_state', {
+            'auto_accept_tasks': bool(GLOBAL_STATE.get('auto_accept_tasks', False)),
+            'auto_switch': bool(GLOBAL_STATE.get('auto_switch', False))
+        }, to=request.sid)
+
     except Exception as e:
         print(f"Error sending initial state: {e}")
         traceback.print_exc()
@@ -1441,28 +2079,873 @@ def handle_connect():
 @socketio.on('disconnect')
 def handle_disconnect():
     """Gestioneaza deconectarea clientului."""
+    CONNECTED_UI_CLIENTS.discard(request.sid)
     print(f"Client disconnected: {request.sid}. Task continues if running.")
+
+def _is_webui_active():
+    """
+    Return True if a human is actively controlling the WebUI (blocks API access).
+    When api_ui_locked=True the browser is in read-only mode, so the API is free to operate
+    regardless of how many browser clients are connected.
+    When api_ui_locked=False (user took control), any connected browser blocks the API.
+    """
+    if GLOBAL_STATE.get('api_ui_locked'):
+        return False   # Browser is watching only — API has control
+    return len(CONNECTED_UI_CLIENTS) > 0
+
+
+@socketio.on('take_api_control')
+def handle_take_api_control():
+    """WebUI user takes over from an active API chat session → releases read-only lock."""
+    request_id = GLOBAL_STATE.get('api_chat_request_id')
+    GLOBAL_STATE['api_chat_active'] = False
+    GLOBAL_STATE['api_ui_locked'] = False
+    GLOBAL_STATE['webui_watching_only'] = False
+    if request_id and request_id in API_CHAT_REGISTRY:
+        API_CHAT_REGISTRY[request_id]['status'] = 'interrupted'
+        API_CHAT_REGISTRY[request_id]['error'] = 'WebUI user took control of the session'
+    save_app_state()
+    socketio.emit('api_session_status', {'active': False})
+    print(f"[API CHAT] WebUI user took control — request {request_id} interrupted", flush=True)
+
+
+@socketio.on('set_api_mode')
+def handle_set_api_mode():
+    """User clicks 'Give API Control' → switches to API mode, browser becomes read-only."""
+    GLOBAL_STATE['api_ui_locked'] = True
+    GLOBAL_STATE['webui_watching_only'] = True
+    save_app_state()
+    socketio.emit('api_session_status', {'active': True})
+    print(f"[CONTROL] Switched to API mode — browser read-only", flush=True)
+
+
+@socketio.on('set_watch_only')
+def handle_set_watch_only():
+    """Legacy alias for set_api_mode (backward compat)."""
+    handle_set_api_mode()
+
+
+@socketio.on('set_auto_flags')
+def handle_set_auto_flags(data):
+    """
+    Sync auto-accept / auto-switch checkbox state from the browser to the server.
+    When set, task proposals and switch proposals are approved automatically
+    on the server without requiring any human or API client action.
+    """
+    global GLOBAL_STATE
+    prev_accept = GLOBAL_STATE.get('auto_accept_tasks', False)
+    prev_switch = GLOBAL_STATE.get('auto_switch', False)
+    GLOBAL_STATE['auto_accept_tasks'] = bool(data.get('auto_accept_tasks', False))
+    GLOBAL_STATE['auto_switch'] = bool(data.get('auto_switch', False))
+    if GLOBAL_STATE['auto_accept_tasks'] != prev_accept or GLOBAL_STATE['auto_switch'] != prev_switch:
+        print(f"[AUTO FLAGS] auto_accept_tasks={GLOBAL_STATE['auto_accept_tasks']}, auto_switch={GLOBAL_STATE['auto_switch']}", flush=True)
+    save_app_state()
+
+
+# ============================================================================
+# SYNCHRONOUS API ENDPOINT FOR SSH EXECUTION
+# ============================================================================
+# This endpoint allows external systems to trigger SSH tasks and wait for completion.
+# It's designed as a foundation for building hybrid agents and automation pipelines.
+
+@app.route('/api/docs', methods=['GET'])
+def api_docs():
+    """Returns full API documentation and application usage guide."""
+    cfg = get_config()
+    current_system = GLOBAL_STATE.get('system_name') or cfg.get('System', 'system_name', fallback='')
+    app_version = "2026-04"
+
+    docs = {
+        "application": {
+            "name": "AI Agent Controller",
+            "version": app_version,
+            "description": (
+                "Web-based system for executing commands on remote systems via SSH "
+                "using LLM-powered autonomous agents. Features: autonomous execution, "
+                "chat interface, knowledge base (RAG), web search, multi-system support, "
+                "network device support (Cisco/Juniper/Arista/Brocade)."
+            ),
+            "port": 5001,
+            "current_system": current_system,
+            "web_ui": "http://<host>:5001/",
+            "docker_container": "ai-agent",
+            "persistent_volume": "/app/keys/  (config.ini, connections.json, knowledge/, session.json)"
+        },
+
+        "architecture": {
+            "execution_llm": "Runs SSH commands autonomously step by step until task complete or max_steps reached",
+            "chat_llm": "Separate conversational LLM — can be different model/server than execution LLM",
+            "web_search_llm": "Autonomous DuckDuckGo search pipeline with dedicated LLM",
+            "knowledge_base": "Documents uploaded by user → embedded (vectorized) → retrieved via semantic search",
+            "dual_log": "Full immutable log + summarized LLM context (auto-summarized when threshold reached)",
+            "modes": {
+                "independent": "Agent runs autonomously until REPORT or max_steps",
+                "assisted": "Agent proposes each command, user approves before execution"
+            }
+        },
+
+        "agent_actions": {
+            "description": "Actions the execution LLM can use in its responses",
+            "actions": {
+                "COMMAND: <cmd>": "Execute SSH command on remote system",
+                "BLOCK: / CONFIG:": "Multi-line interactive session (for network devices: conf t, interface, etc.)",
+                "SRCH: <query>": "Search execution history (full log, case-insensitive substring)",
+                "KNOWLEDGE: <query>": "Vector similarity search in uploaded knowledge documents",
+                "WRITE_FILE: <path>": "Create/write file on remote system",
+                "ASK: <question>": "Request human input (only if ASK mode enabled)",
+                "TIMEOUT: <seconds>": "Adjust command timeout for next step (clamped to UI max)",
+                "REPORT: <text>": "Final task report — ends the task"
+            }
+        },
+
+        "chat_actions": {
+            "description": "Actions and tags the Chat LLM can use",
+            "actions": {
+                "SRCH: <query>": "Search execution history — results injected back into chat context",
+                "KNOWLEDGE: <query>": "Vector search in knowledge documents",
+                "WEB_SEARCH: <query>": "Autonomous web research (requires REASON: line before it)",
+                "<<REQUEST_TASK: objective>>": "Propose a new execution task to the user",
+                "<<SWITCH_SYSTEM: name>>": "Request switching to another configured system",
+                "<<MARK_STEP_COMPLETED: X>>": "Mark step X of action plan as done",
+                "<<ACTION_PLAN_START>>..<<ACTION_PLAN_STOP>>": "Create a multi-step action plan"
+            }
+        },
+
+        "api_endpoints": {
+            "execution": {
+                "POST /api/execute_ssh": {
+                    "description": "Start an autonomous SSH task asynchronously",
+                    "request_body": {
+                        "objective": "(string, required) Task description for the agent",
+                        "system_name": "(string, optional) Target system alias — uses current if omitted",
+                        "allow_ask": "(bool, optional) Allow agent to use ASK: action. Default: false"
+                    },
+                    "response": {
+                        "status": "success | error",
+                        "task_id": "UUID string — use for polling",
+                        "message": "Human-readable status"
+                    },
+                    "example_request": {
+                        "objective": "Check disk usage on all partitions and report any over 80%",
+                        "system_name": "Production Server",
+                        "allow_ask": False
+                    },
+                    "example_response": {
+                        "status": "success",
+                        "task_id": "a1b2c3d4-...",
+                        "message": "Task started"
+                    }
+                },
+                "GET /api/task_status/<task_id>": {
+                    "description": "Poll the status of a running or completed task",
+                    "response": {
+                        "status": "running | completed | failed | stopped",
+                        "current_step": "int — current step number",
+                        "latest_activity": "string — last log line",
+                        "result": "string | null — final REPORT text when completed",
+                        "start_time": "ISO timestamp"
+                    }
+                },
+                "POST /api/stop": {
+                    "description": "Stop the currently running task",
+                    "response": {"status": "success | error", "message": "..."}
+                },
+                "GET /api/status": {
+                    "description": "Health check — returns app state",
+                    "response": {
+                        "status": "ok",
+                        "task_running": "bool",
+                        "current_system": "string",
+                        "llm_status": "object"
+                    }
+                }
+            },
+            "systems": {
+                "GET /api/list_systems": {
+                    "description": "List all configured systems and which one is active",
+                    "response": {
+                        "systems": ["list of system names/aliases"],
+                        "current_system": "active system name"
+                    }
+                },
+                "POST /api/switch_system": {
+                    "description": "Switch the active SSH target system",
+                    "request_body": {
+                        "system_name": "(string, required) Name/alias of target system"
+                    },
+                    "response": {"status": "success | error", "message": "..."}
+                }
+            },
+            "chat": {
+                "POST /api/chat/message": {
+                    "description": "Send a message to the Chat LLM",
+                    "request_body": {
+                        "message": "(string, required) User message",
+                        "request_id": "(string, optional) ID for polling status"
+                    },
+                    "response": {
+                        "status": "queued | processing | completed | error",
+                        "request_id": "string",
+                        "response": "string (if completed synchronously)"
+                    }
+                },
+                "GET /api/chat/status/<request_id>": {
+                    "description": "Poll the status of a chat message",
+                    "response": {
+                        "status": "queued | processing | completed | failed",
+                        "response": "string — agent reply when completed"
+                    }
+                },
+                "POST /api/chat/approve/<request_id>": {
+                    "description": "Approve or deny a pending agent action (ASK, system switch, command approval)",
+                    "request_body": {
+                        "approved": "(bool, required) true to approve, false to deny",
+                        "answer": "(string, optional) Text answer for ASK actions"
+                    }
+                },
+                "GET /api/chat/capabilities": {
+                    "description": "Returns what the chat agent supports in current configuration",
+                    "response": {
+                        "knowledge_enabled": "bool",
+                        "web_search_enabled": "bool",
+                        "ask_enabled": "bool",
+                        "available_systems": ["list"]
+                    }
+                },
+                "POST /api/set_control_mode": {
+                    "description": "Set whether API or Web UI controls the chat session",
+                    "request_body": {"mode": "api | web"}
+                },
+                "POST /api/chat/release": {
+                    "description": "Release API control back to the web UI"
+                }
+            },
+            "documentation": {
+                "GET /api/docs": {
+                    "description": "This endpoint — returns full API documentation and usage guide"
+                }
+            }
+        },
+
+        "configuration": {
+            "key_sections": {
+                "[General]": "provider (ollama/gemini/anthropic), API keys",
+                "[Agent]": "model_name, max_steps, summarization_threshold, command_timeout, llm_timeout, temperature",
+                "[Ollama]": "api_url, num_ctx (context window), keep_alive (default -1 = stay in VRAM indefinitely)",
+                "[ChatLLM]": "enabled, provider, model_name, ollama_url (independent from exec LLM URL)",
+                "[WebSearch]": "enabled, provider, model_name, ollama_url, search/content settings",
+                "[System]": "ip_address, username, ssh_port, auth_method, device_type, system_name, enable_password"
+            },
+            "auth_methods": ["key", "password", "key_or_password"],
+            "device_types": ["linux", "windows", "cisco", "nxos", "iosxr", "iosxe", "brocade", "juniper", "arista", "other"],
+            "keep_alive_values": {
+                "-1": "Model stays in VRAM indefinitely (recommended for low-latency)",
+                "30m": "30 minutes",
+                "1h": "1 hour",
+                "0": "Unload immediately after each request"
+            }
+        },
+
+        "knowledge_base": {
+            "description": "Upload documents → auto-embedded + LLM summary → injected into every prompt as index",
+            "how_it_works": (
+                "All documents are vectorized. A ≤900-char LLM-generated summary per document "
+                "is injected into every prompt (currently ~7400 chars total for 8 docs vs old 51879 chars — 86% reduction). "
+                "Agent uses KNOWLEDGE: <query> to retrieve full relevant chunks via semantic similarity search."
+            ),
+            "supported_formats": ["txt", "md", "json", "csv", "pdf", "docx", "png", "jpg", "gif", "bmp", "tiff (OCR via Tesseract)"],
+            "vector_stores": ["ChromaDB (persistent)", "FAISS (manual persistence)"],
+            "source_labels": {
+                "USER": "Manually uploaded documents",
+                "WEB": "Documents attached automatically by web search module"
+            }
+        },
+
+        "web_search": {
+            "description": "Autonomous 5-step web research pipeline triggered by Chat LLM",
+            "pipeline": [
+                "1. LLM optimizes search query",
+                "2. DuckDuckGo search",
+                "3. LLM ranks results",
+                "4. Page fetch + relevance check (trafilatura → beautifulsoup4 fallback)",
+                "5. LLM generates summary → injected into chat context or attached to knowledge base"
+            ],
+            "trigger_format": "REASON: <why you need this>\nWEB_SEARCH: <search query>"
+        },
+
+        "debugging": {
+            "check_logs": "docker logs ai-agent --tail 50",
+            "restart": "docker restart ai-agent",
+            "syntax_check": "python3 -m py_compile app.py agent_core.py ssh_utils.py config.py session_manager.py llm_utils.py log_manager.py knowledge_manager.py web_search_module.py chat_export.py",
+            "common_issues": {
+                "chat_srch_loop": "Model outputs SRCH + inline answer in same response — code detects inline answer >150 chars and skips re-search",
+                "ollama_500_error": "kimi-k2:1t-cloud server-side issue — 5 retries with progressive temperature bump handle it",
+                "model_not_loading": "Set keep_alive=-1 in [Ollama] config or Advanced Settings in UI",
+                "wrong_chat_llm_url": "ChatLLM has its own ollama_url field — set separately from exec LLM URL",
+                "modal_not_appearing": "Check PENDING_ASK_DATA / PENDING_APPROVAL_DATA globals in app.py + socketio.sleep(0.1) flush",
+                "request_task_truncated": "REQUEST_TASK regex searches original response_text (not backtick-stripped copy)",
+                "multiple_commands": "LLM generates 2 COMMAND: lines — only first executed, skipped ones injected as SYSTEM NOTE for next step"
+            }
+        }
+    }
+
+    return jsonify(docs)
+
+
+@app.route('/api/execute_ssh', methods=['POST'])
+def api_execute_ssh():
+    """
+    Asynchronous API endpoint for SSH task execution.
+
+    Accepts an objective, starts execution in the background, and immediately
+    returns a task_id for status polling.
+
+    Request Body:
+        {
+            "objective": "string - The task objective to execute",
+            "system_name": "string - Name or connection string of target system (optional)",
+            "mode": "independent|assisted" (optional, default: independent)
+        }
+
+    Response:
+        {
+            "status": "queued",
+            "task_id": "uuid",
+            "objective": "string",
+            "system": { "name": "...", "connection": "..." },
+            "info": "Task started. Check status at /api/task_status/<task_id>"
+        }
+    """
+    global GLOBAL_STATE, USER_RESPONSE, USER_ANSWER
+
+    # Parse request
+    data = request.json or {}
+    objective = data.get('objective', '').strip()
+    system_name = data.get('system_name', '').strip()  # Optional: target specific system
+    execution_mode = data.get('mode', 'independent')
+
+    # Validate input
+    if not objective:
+        return jsonify({
+            'status': 'error',
+            'message': 'No objective provided. Please include "objective" in request body.'
+        }), 400
+
+    if execution_mode not in ['independent', 'assisted']:
+        return jsonify({
+            'status': 'error',
+            'message': 'Invalid mode. Must be "independent" or "assisted".'
+        }), 400
+
+    # Block execution when WebUI has control — same guard as /api/chat/message
+    if _is_webui_active():
+        return jsonify({
+            'error': 'WebUI active — control blocked by human intervention',
+            'code': 'WEBUI_ACTIVE',
+            'hint': 'Click "Give API Control" in the browser banner to grant API access'
+        }), 423
+
+    # Atomic check-then-reserve: prevents two concurrent API calls from both starting a task.
+    # We set task_running=True immediately under the lock to claim the slot.
+    # If any subsequent setup step fails we reset it before returning the error.
+    with TASK_START_LOCK:
+        if GLOBAL_STATE['task_running']:
+            return jsonify({
+                'status': 'error',
+                'message': 'A task is already running. Please wait for it to complete or stop it first.'
+            }), 409  # Conflict
+        GLOBAL_STATE['task_running'] = True  # Reserve the slot atomically
+
+    # === SYSTEM TARGETING: Switch to specified system if provided ===
+    target_system_info = None
+    if system_name:
+        # Load saved connections and find the target system
+        connections = session_manager.load_connections()
+        target_system = None
+
+        for conn in connections:
+            conn_name = conn.get('name', '')
+            conn_string = f"{conn.get('username', '')}@{conn.get('ip', '')}"
+
+            if system_name == conn_name or system_name == conn_string:
+                target_system = conn
+                break
+
+        if not target_system:
+            GLOBAL_STATE['task_running'] = False  # Release reserved slot
+            return jsonify({
+                'status': 'error',
+                'message': f"System not found: {system_name}. Use /api/list_systems to see available systems."
+            }), 404
+
+        # Update config.ini with the target system
+        cfg = get_config()
+        cfg.set('System', 'ip_address', target_system.get('ip', ''))
+        cfg.set('System', 'username', target_system.get('username', ''))
+        cfg.set('System', 'ssh_port', str(target_system.get('port', 22)))
+        cfg.set('System', 'system_name', target_system.get('name', ''))
+
+        with open(CONFIG_FILE_PATH, 'w') as f:
+            cfg.write(f)
+
+        # Update GLOBAL_STATE
+        GLOBAL_STATE['system_ip'] = target_system.get('ip', '')
+        GLOBAL_STATE['system_username'] = target_system.get('username', '')
+        GLOBAL_STATE['system_name'] = target_system.get('name', '')
+
+        # Test SSH connection to the new system
+        initialize_ssh_status()
+
+        if GLOBAL_STATE['ssh_connection_status'].get('status') != 'success':
+            GLOBAL_STATE['task_running'] = False  # Release reserved slot
+            return jsonify({
+                'status': 'error',
+                'message': f"Failed to connect to system '{system_name}': {GLOBAL_STATE['ssh_connection_status'].get('message', 'Unknown error')}"
+            }), 503  # Service Unavailable
+
+        target_system_info = {
+            'name': target_system.get('name', f"{target_system.get('username')}@{target_system.get('ip')}"),
+            'connection': f"{target_system.get('username')}@{target_system.get('ip')}",
+            'ip': target_system.get('ip'),
+            'username': target_system.get('username')
+        }
+
+        # Broadcast system change to UI
+        socketio.emit('system_changed', target_system_info)
+        socketio.emit('ssh_status_update', GLOBAL_STATE['ssh_connection_status'])
+
+        print(f"[API] Switched to system: {target_system_info['name']}")
+
+    # If no specific system was targeted, get current system from config
+    if not target_system_info:
+        target_system_info = {
+            'name': GLOBAL_STATE.get('system_name', '') or f"{GLOBAL_STATE.get('system_username', '')}@{GLOBAL_STATE.get('system_ip', '')}",
+            'connection': f"{GLOBAL_STATE.get('system_username', '')}@{GLOBAL_STATE.get('system_ip', '')}",
+            'ip': GLOBAL_STATE.get('system_ip', ''),
+            'username': GLOBAL_STATE.get('system_username', '')
+        }
+
+    # === GENERATE TASK ID FOR ASYNC TRACKING ===
+    task_id = str(uuid.uuid4())
+
+    # Initialize task registry entry
+    agent_core.API_TASK_REGISTRY[task_id] = {
+        'status': 'queued',
+        'start_time': time.time(),
+        'objective': objective,
+        'system': target_system_info,
+        'current_step': 0,
+        'latest_activity': 'Queued for execution...',
+        'result': None,
+        'last_updated': time.time()
+    }
+
+    # Clear the previous report to ensure we get fresh results
+    GLOBAL_STATE['last_session']['final_report'] = None
+
+    # Set up execution state (task_running already set to True under TASK_START_LOCK above)
+    GLOBAL_STATE['current_objective'] = objective
+    GLOBAL_STATE['current_execution_mode'] = execution_mode
+    GLOBAL_STATE['current_summarization_mode'] = 'automatic'
+    GLOBAL_STATE['current_allow_ask_mode'] = False  # API mode doesn't support ASK
+    GLOBAL_STATE['task_paused'] = False
+
+    # Reset communication variables
+    USER_RESPONSE.clear()
+    USER_ANSWER.clear()
+
+    # Load system info from config
+    cfg = get_config()
+    GLOBAL_STATE['system_username'] = cfg.get('System', 'username', fallback='unknown')
+    GLOBAL_STATE['system_ip'] = cfg.get('System', 'ip_address', fallback='unknown')
+
+    # Mark this as an API-triggered task for broadcast logic
+    GLOBAL_STATE['is_api_task'] = True
+    GLOBAL_STATE['current_task_id'] = task_id  # Store task_id for reference
+
+    # === LIVE VIEW: Broadcast to all connected UI clients ===
+    socketio.emit('external_objective_update', {'objective': objective})
+    socketio.emit('api_task_started', {
+        'objective': objective,
+        'mode': execution_mode,
+        'source': 'api',
+        'task_id': task_id
+    })
+    socketio.emit('task_started')
+
+    # Start the agent in a background thread (non-blocking)
+    print(f"[API] Starting async SSH task (ID: {task_id}): {objective[:100]}...")
+    socketio.start_background_task(
+        run_agent_and_update_state,
+        socketio,
+        GLOBAL_STATE,
+        CONTROL_FLAGS,
+        EVENT_OBJECTS,
+        task_id  # Pass task_id for registry updates
+    )
+
+    # Return immediately with task_id
+    return jsonify({
+        'status': 'queued',
+        'task_id': task_id,
+        'objective': objective,
+        'system': target_system_info,
+        'info': f'Task started. Check status at /api/task_status/{task_id}'
+    }), 202  # Accepted
+
+
+@app.route('/api/task_status/<task_id>', methods=['GET'])
+def api_task_status(task_id):
+    """
+    Returns the status and progress of an async task.
+
+    Response (running):
+        {
+            "status": "running",
+            "current_step": 3,
+            "latest_activity": "[Executing command] Checking disk space...",
+            "duration_seconds": 45.2,
+            "objective": "...",
+            "system": {...}
+        }
+
+    Response (completed):
+        {
+            "status": "completed",
+            "result": "Final report text...",
+            "current_step": 5,
+            "duration_seconds": 120.5,
+            "objective": "...",
+            "system": {...}
+        }
+
+    Response (failed/stopped):
+        {
+            "status": "failed|stopped",
+            "result": "Error message or stopped reason",
+            "current_step": 2,
+            "duration_seconds": 30.1,
+            "objective": "...",
+            "system": {...}
+        }
+    """
+    # Check if task exists
+    if task_id not in agent_core.API_TASK_REGISTRY:
+        return jsonify({
+            'status': 'error',
+            'message': f'Task not found: {task_id}'
+        }), 404
+
+    task_info = agent_core.API_TASK_REGISTRY[task_id]
+
+    # Calculate duration
+    duration = time.time() - task_info.get('start_time', time.time())
+
+    # Build response
+    response = {
+        'status': task_info.get('status', 'unknown'),
+        'current_step': task_info.get('current_step', 0),
+        'latest_activity': task_info.get('latest_activity', 'Unknown'),
+        'duration_seconds': round(duration, 2),
+        'objective': task_info.get('objective', ''),
+        'system': task_info.get('system', {})
+    }
+
+    # Include result if task is finished
+    if task_info.get('result'):
+        response['result'] = task_info['result']
+
+    # Include auto-analyze request_id when available (set by _auto_analyze_task_result)
+    # The client should poll GET /api/chat/status/<auto_analyze_request_id> until completed,
+    # then send the next message (avoids 409 from hitting /api/chat/message too early).
+    if task_info.get('auto_analyze_request_id'):
+        response['auto_analyze_request_id'] = task_info['auto_analyze_request_id']
+
+    return jsonify(response)
+
+
+@app.route('/api/status', methods=['GET'])
+def api_status():
+    """
+    Returns the current status of the SSH agent.
+
+    Response:
+        {
+            "task_running": bool,
+            "task_paused": bool,
+            "current_objective": string or null,
+            "ssh_connected": bool,
+            "llm_connected": bool
+        }
+    """
+    return jsonify({
+        'task_running': GLOBAL_STATE.get('task_running', False),
+        'task_paused': GLOBAL_STATE.get('task_paused', False),
+        'current_objective': GLOBAL_STATE.get('current_objective', '') or None,
+        'ssh_status': GLOBAL_STATE.get('ssh_connection_status', {}).get('status', 'unknown'),
+        'llm_status': GLOBAL_STATE.get('llm_connection_status', {}).get('status', 'unknown')
+    })
+
+
+@app.route('/api/stop', methods=['POST'])
+def api_stop():
+    """
+    Stops the currently running task.
+
+    Response:
+        {
+            "status": "success|error",
+            "message": string
+        }
+    """
+    if not GLOBAL_STATE.get('task_running', False):
+        return jsonify({
+            'status': 'error',
+            'message': 'No task is currently running.'
+        }), 400
+
+    # Stop the task
+    GLOBAL_STATE['task_running'] = False
+    GLOBAL_STATE['task_paused'] = False
+    ssh_utils.abort_active_connection()
+
+    return jsonify({
+        'status': 'success',
+        'message': 'Task stop signal sent.'
+    })
+
+
+@app.route('/api/list_systems', methods=['GET'])
+def api_list_systems():
+    """
+    Returns a list of all saved remote systems.
+
+    Response:
+        {
+            "status": "success",
+            "systems": [
+                {"name": "Production Server", "connection": "root@192.168.1.50", "port": 22},
+                {"name": "Test Server", "connection": "ubuntu@10.0.0.5", "port": 22}
+            ],
+            "current_system": {
+                "name": "Production Server",
+                "connection": "root@192.168.1.50"
+            }
+        }
+    """
+    try:
+        # Load saved connections
+        connections = session_manager.load_connections()
+
+        # Get current system from config
+        cfg = get_config()
+        current_ip = cfg.get('System', 'ip_address', fallback='')
+        current_user = cfg.get('System', 'username', fallback='')
+        current_name = cfg.get('System', 'system_name', fallback='')
+
+        # Build systems list
+        systems = []
+        for conn in connections:
+            system_entry = {
+                'name': conn.get('name', f"{conn.get('username', '')}@{conn.get('ip', '')}"),
+                'connection': f"{conn.get('username', '')}@{conn.get('ip', '')}",
+                'ip': conn.get('ip', ''),
+                'username': conn.get('username', ''),
+                'port': conn.get('port', 22)
+            }
+            systems.append(system_entry)
+
+        # Build current system info
+        current_system = None
+        if current_ip and current_user:
+            current_system = {
+                'name': current_name or f"{current_user}@{current_ip}",
+                'connection': f"{current_user}@{current_ip}",
+                'ip': current_ip,
+                'username': current_user
+            }
+
+        return jsonify({
+            'status': 'success',
+            'systems': systems,
+            'current_system': current_system
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+
+@app.route('/api/switch_system', methods=['POST'])
+def api_switch_system():
+    """
+    Switch to a different remote system by name or connection string.
+
+    Request Body:
+        {
+            "system_name": "Production Server"  // Name or connection string (user@ip)
+        }
+
+    Response:
+        {
+            "status": "success",
+            "message": "Switched to system: Production Server",
+            "system": { "name": "...", "connection": "...", "ip": "...", "username": "..." }
+        }
+    """
+    try:
+        data = request.json or {}
+        system_identifier = data.get('system_name', '').strip()
+
+        if not system_identifier:
+            return jsonify({
+                'status': 'error',
+                'message': 'system_name is required'
+            }), 400
+
+        # Load saved connections
+        connections = session_manager.load_connections()
+
+        # Find the system by name or connection string
+        target_system = None
+        for conn in connections:
+            conn_name = conn.get('name', '')
+            conn_string = f"{conn.get('username', '')}@{conn.get('ip', '')}"
+
+            if system_identifier == conn_name or system_identifier == conn_string:
+                target_system = conn
+                break
+
+        if not target_system:
+            return jsonify({
+                'status': 'error',
+                'message': f"System not found: {system_identifier}"
+            }), 404
+
+        # IMPROVED: Get previous connection info BEFORE updating (from config.ini as fallback)
+        cfg = get_config()
+        previous_username = cfg.get('System', 'username', fallback='') or GLOBAL_STATE.get('system_username', '')
+        previous_ip = cfg.get('System', 'ip_address', fallback='') or GLOBAL_STATE.get('system_ip', '')
+        previous_name = cfg.get('System', 'system_name', fallback='') or GLOBAL_STATE.get('system_name', '')
+
+        # Extract new connection info
+        new_ip = target_system.get('ip', '')
+        new_username = target_system.get('username', '')
+        new_name = target_system.get('name', f"{new_username}@{new_ip}")
+
+        # Update config.ini with the new system
+        cfg.set('System', 'ip_address', new_ip)
+        cfg.set('System', 'username', new_username)
+        cfg.set('System', 'ssh_port', str(target_system.get('port', 22)))
+        cfg.set('System', 'system_name', new_name)
+
+        with open(CONFIG_FILE_PATH, 'w') as f:
+            cfg.write(f)
+
+        # Update GLOBAL_STATE
+        GLOBAL_STATE['system_ip'] = new_ip
+        GLOBAL_STATE['system_username'] = new_username
+        GLOBAL_STATE['system_name'] = new_name
+
+        # Drop persistent connection — next command will connect to the new system
+        ssh_utils.close_persistent_client()
+
+        # Test the new connection
+        initialize_ssh_status()
+
+        # Log SSH connection change to Full Log AND LLM Context
+        ssh_status = GLOBAL_STATE.get('ssh_connection_status', {})
+        if ssh_status.get('status') == 'success':
+            log_manager = GLOBAL_STATE.get('log_manager')
+            if log_manager:
+                log_manager.log_ssh_connection_change(new_username, new_ip, previous_username, previous_ip, new_name)
+                # Track last logged system to prevent duplicate entries from agent_core
+                GLOBAL_STATE['last_logged_system'] = {'username': new_username, 'ip': new_ip, 'name': new_name}
+                if previous_ip and previous_username:
+                    print(f"[API SWITCH] Connection change logged: {previous_name or previous_username}@{previous_ip} -> {new_name}", flush=True)
+                else:
+                    print(f"[API SWITCH] Connection logged: {new_name} (first connection)", flush=True)
+
+        # Detect OS, user, sudo on the new system
+        if ssh_status.get('status') == 'success':
+            agent_core.detect_system_info(GLOBAL_STATE)
+
+        # Broadcast system change to all connected UI clients
+        system_info = {
+            'name': new_name,
+            'connection': f"{new_username}@{new_ip}",
+            'ip': new_ip,
+            'username': new_username
+        }
+        socketio.emit('system_changed', system_info)
+        socketio.emit('ssh_status_update', GLOBAL_STATE['ssh_connection_status'])
+
+        return jsonify({
+            'status': 'success',
+            'message': f"Switched to system: {system_info['name']}",
+            'system': system_info,
+            'ssh_status': GLOBAL_STATE['ssh_connection_status']
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
+# ============================================================================
 
 # --- Wrapper pentru Task-ul Agentului ---
 
-def run_agent_and_update_state(socketio, global_state, control_flags, event_objects):
+def run_agent_and_update_state(socketio, global_state, control_flags, event_objects, task_id=None):
     """
     Wrapper care ruleaza agent_task_runner si gestioneaza curatarea
     si salvarea starii la final.
+
+    Args:
+        task_id: Optional UUID for API task tracking (passed to agent_task_runner)
     """
     try:
         # Apelam functia principala din agent_core
-        agent_core.agent_task_runner(socketio, global_state, control_flags, event_objects)
+        agent_core.agent_task_runner(socketio, global_state, control_flags, event_objects, task_id=task_id)
     except Exception as e:
         print(f"Agent task runner exception: {e}")
         traceback.print_exc()
         global_state['last_session']['final_report'] = f"Task failed with exception: {e}"
+        # Update API task registry on exception
+        if task_id and task_id in agent_core.API_TASK_REGISTRY:
+            agent_core.API_TASK_REGISTRY[task_id].update({
+                'status': 'failed',
+                'result': f"Task failed with exception: {e}",
+                'latest_activity': f'Exception: {type(e).__name__}',
+                'last_updated': time.time()
+            })
     finally:
         # Asiguram resetarea flag-urilor
         global_state['task_running'] = False
         global_state['task_paused'] = False
         socketio.emit('task_finished')
-        
+
+        # If task was started from an API chat session, auto-trigger chat analysis
+        # (normally done by the browser via sessionStorage.isTaskFromChat, unavailable in API mode)
+        # Also trigger when Telegram has active chats — browser-side SocketIO trigger won't reach it.
+        _tg_has_chats = False
+        try:
+            from telegram_bot import get_telegram_bot as _get_tg
+            _tg = _get_tg()
+            _tg_has_chats = bool(_tg and _tg._active_chats)
+        except Exception:
+            pass
+
+        if global_state.get('task_from_api_chat') or _tg_has_chats:
+            global_state['task_from_api_chat'] = False
+            print("[API CHAT] Task finished — auto-triggering chat analysis", flush=True)
+            socketio.start_background_task(_auto_analyze_task_result, global_state)
+
         # Salvam starea
         save_app_state()
 
@@ -1472,22 +2955,27 @@ def run_agent_and_update_state(socketio, global_state, control_flags, event_obje
 def handle_execute_task(data):
     """Porneste executia unui task nou."""
     global GLOBAL_STATE, USER_RESPONSE, USER_ANSWER
-    
-    if GLOBAL_STATE['task_running']:
-        socketio.emit('agent_log', {'data': "A task is already running. Please stop it first."})
-        return
-    
+
+    # Clear pending task proposal - task is being executed
+    GLOBAL_STATE['_pending_task_proposal'] = None
+
     objective = data.get('data', '').strip()
     if not objective:
         socketio.emit('agent_log', {'data': "No objective provided."})
         return
-    
-    # Actualizam starea
+
+    # Atomic check-then-set: prevents two concurrent callers from both starting a task
+    with TASK_START_LOCK:
+        if GLOBAL_STATE['task_running']:
+            socketio.emit('agent_log', {'data': "A task is already running. Please stop it first."})
+            return
+        GLOBAL_STATE['task_running'] = True
+
+    # Actualizam starea (task_running already set above under lock)
     GLOBAL_STATE['current_objective'] = objective
     GLOBAL_STATE['current_execution_mode'] = data.get('mode', 'independent')
     GLOBAL_STATE['current_summarization_mode'] = data.get('summarization_mode', 'automatic')
     GLOBAL_STATE['current_allow_ask_mode'] = data.get('allow_ask', False)
-    GLOBAL_STATE['task_running'] = True
     GLOBAL_STATE['task_paused'] = False
 
     # IMPROVEMENT: Salvam command_timeout in config daca este furnizat
@@ -1553,6 +3041,20 @@ def handle_stop_task():
             pass
         socketio.emit('agent_log', {'data': "\n--- Task stopped by user. ---"})
 
+@socketio.on('abort_command')
+def handle_abort_command():
+    """Abort the currently running command (kill SSH) and pause execution."""
+    global GLOBAL_STATE
+    if GLOBAL_STATE['task_running']:
+        # 1. Kill only the running channel — persistent connection stays alive so execution can resume
+        ssh_utils.abort_active_channel()
+
+        # 2. Pause execution (not stop — user can resume after adjustments)
+        GLOBAL_STATE['task_paused'] = True
+        socketio.emit('task_paused')
+        socketio.emit('agent_log', {'data': "\n--- Command aborted by user. Execution paused. ---"})
+        print("[ABORT] Command aborted by user. Channel closed, persistent connection kept, execution paused.", flush=True)
+
 @socketio.on('pause_task')
 def handle_pause_task():
     """Pune task-ul pe pauza."""
@@ -1575,6 +3077,7 @@ def handle_resume_task(data):
             log_msg = f"\n--- Objective updated during pause ---\nOld: {old_objective}\nNew: {new_objective}\n"
             socketio.emit('agent_log', {'data': log_msg})
             GLOBAL_STATE['last_session']['log'] += log_msg + '\n'
+            append_live_log(log_msg)
             GLOBAL_STATE['agent_history'] += f"\n\n--- USER INTERVENTION ---\nObjective changed from:\n{old_objective}\nTo:\n{new_objective}\n"
             socketio.emit('update_history', {'data': GLOBAL_STATE['agent_history']})
         
@@ -1593,6 +3096,7 @@ def handle_update_execution_mode(data):
             log_msg = f"--- Execution mode changed to: {new_mode} ---"
             socketio.emit('agent_log', {'data': log_msg})
             GLOBAL_STATE['last_session']['log'] += log_msg + '\n'
+            append_live_log(log_msg)
 
 @socketio.on('toggle_validator')
 def handle_toggle_validator(data):
@@ -1624,6 +3128,7 @@ def handle_update_summarization_threshold(data):
             log_msg = f"--- Summarization threshold updated to: {new_threshold} chars ---"
             socketio.emit('agent_log', {'data': log_msg})
             GLOBAL_STATE['last_session']['log'] += log_msg + '\n'
+            append_live_log(log_msg)
 
 @socketio.on('update_timeout')
 def handle_update_timeout(data):
@@ -1647,6 +3152,7 @@ def handle_update_timeout(data):
         socketio.emit('agent_log', {'data': log_msg})
         if GLOBAL_STATE.get('last_session'):
             GLOBAL_STATE['last_session']['log'] += log_msg + '\n'
+            append_live_log(log_msg)
 
 # --- Handler-e pentru Aprobare Comenzi si Interactiuni ---
 
@@ -1656,7 +3162,7 @@ def handle_approve_command(data):
     global USER_RESPONSE, USER_APPROVAL_EVENT
     USER_RESPONSE.clear()
     USER_RESPONSE.update(data)
-    USER_APPROVAL_EVENT.send()
+    USER_APPROVAL_EVENT.set()
 
 @socketio.on('provide_answer')
 def handle_provide_answer(data):
@@ -1664,7 +3170,7 @@ def handle_provide_answer(data):
     global USER_ANSWER, USER_ANSWER_EVENT
     USER_ANSWER.clear()
     USER_ANSWER.update(data)
-    USER_ANSWER_EVENT.send()
+    USER_ANSWER_EVENT.set()
 
 @socketio.on('summarize_decision')
 def handle_summarize_decision(data):
@@ -1687,7 +3193,7 @@ def handle_summarize_decision(data):
     if data.get('summarize'):
         # Apelam functia de sumarizare
         agent_core.summarize_history(socketio, GLOBAL_STATE)
-    SUMMARIZATION_EVENT.send()
+    SUMMARIZATION_EVENT.set()
 
 @socketio.on('manual_summarize')
 def handle_manual_summarize():
@@ -1789,6 +3295,9 @@ def handle_chat_message(data):
     if not message:
         return
 
+    # Clear pending task proposal - user is continuing conversation
+    GLOBAL_STATE['_pending_task_proposal'] = None
+
     # Start a background task for the chat response
     socketio.start_background_task(
         agent_core.process_chat_message,
@@ -1796,6 +3305,12 @@ def handle_chat_message(data):
         GLOBAL_STATE,
         message
     )
+
+@socketio.on('cancel_chat')
+def handle_cancel_chat():
+    """Cancel ongoing chat processing so the user can recall and edit their message."""
+    print("[CHAT] User requested cancel/recall", flush=True)
+    agent_core.cancel_chat_processing()
 
 @socketio.on('clear_chat')
 def handle_clear_chat():
@@ -1805,24 +3320,192 @@ def handle_clear_chat():
         log_manager.clear_chat_history()
     socketio.emit('chat_history_cleared')
 
-@socketio.on('analyze_task_result')
-def handle_analyze_task_result():
+def _do_approve_system_switch(target_system):
+    """Core logic for approving a system switch. Called by both socket handler and HTTP API."""
+    global GLOBAL_STATE, SYSTEM_SWITCH_RESPONSE, SYSTEM_SWITCH_EVENT
+
+    print(f"[SYSTEM SWITCH] Approving switch to: {target_system}", flush=True)
+
+    if not target_system:
+        SYSTEM_SWITCH_RESPONSE['approved'] = False
+        SYSTEM_SWITCH_RESPONSE['target_system'] = ''
+        SYSTEM_SWITCH_RESPONSE['error'] = 'No target system specified'
+        SYSTEM_SWITCH_EVENT.set()
+        return
+
+    connections = session_manager.load_connections()
+    target_conn = None
+    for conn in connections:
+        conn_name = conn.get('name', f"{conn.get('username')}@{conn.get('ip')}")
+        if conn_name.lower() == target_system.lower() or \
+           f"{conn.get('username')}@{conn.get('ip')}".lower() == target_system.lower():
+            target_conn = conn
+            break
+
+    if not target_conn:
+        SYSTEM_SWITCH_RESPONSE['approved'] = False
+        SYSTEM_SWITCH_RESPONSE['target_system'] = target_system
+        SYSTEM_SWITCH_RESPONSE['error'] = f"System '{target_system}' not found in saved connections"
+        SYSTEM_SWITCH_EVENT.set()
+        return
+
+    cfg = get_config()
+    previous_username = cfg.get('System', 'username', fallback='') or GLOBAL_STATE.get('system_username', '')
+    previous_ip = cfg.get('System', 'ip_address', fallback='') or GLOBAL_STATE.get('system_ip', '')
+    previous_name = cfg.get('System', 'system_name', fallback='') or GLOBAL_STATE.get('system_name', '')
+
+    new_ip = target_conn.get('ip', '')
+    new_username = target_conn.get('username', '')
+    new_name = target_conn.get('name', f"{new_username}@{new_ip}")
+
+    cfg.set('System', 'ip_address', new_ip)
+    cfg.set('System', 'username', new_username)
+    cfg.set('System', 'ssh_port', str(target_conn.get('port', 22)))
+    cfg.set('System', 'ssh_key_path', target_conn.get('ssh_key_path', '/app/keys/id_rsa'))
+    cfg.set('System', 'system_name', new_name)
+    with open(CONFIG_FILE_PATH, 'w') as configfile:
+        cfg.write(configfile)
+
+    GLOBAL_STATE['system_ip'] = new_ip
+    GLOBAL_STATE['system_username'] = new_username
+    GLOBAL_STATE['system_name'] = new_name
+
+    ssh_utils.close_persistent_client()
+    initialize_ssh_status()
+    ssh_status = GLOBAL_STATE.get('ssh_connection_status', {})
+
+    if ssh_status.get('status') == 'success':
+        log_manager = GLOBAL_STATE.get('log_manager')
+        if log_manager:
+            log_manager.log_ssh_connection_change(new_username, new_ip, previous_username, previous_ip, new_name)
+            GLOBAL_STATE['last_logged_system'] = {'username': new_username, 'ip': new_ip, 'name': new_name}
+        agent_core.detect_system_info(GLOBAL_STATE)
+        socketio.emit('system_changed', {
+            'system_name': GLOBAL_STATE['system_name'],
+            'ip': new_ip,
+            'username': new_username
+        })
+        SYSTEM_SWITCH_RESPONSE['approved'] = True
+        SYSTEM_SWITCH_RESPONSE['target_system'] = GLOBAL_STATE['system_name']
+        SYSTEM_SWITCH_RESPONSE['error'] = None
+        print(f"[SYSTEM SWITCH] Successfully switched to: {GLOBAL_STATE['system_name']}", flush=True)
+    else:
+        SYSTEM_SWITCH_RESPONSE['approved'] = False
+        SYSTEM_SWITCH_RESPONSE['target_system'] = target_system
+        SYSTEM_SWITCH_RESPONSE['error'] = ssh_status.get('message', 'SSH connection failed')
+        print(f"[SYSTEM SWITCH] Failed to switch to {target_system}: {ssh_status.get('message')}", flush=True)
+
+    print(f"[SYSTEM SWITCH DEBUG] About to set SYSTEM_SWITCH_EVENT (id={id(SYSTEM_SWITCH_EVENT)})", flush=True)
+    SYSTEM_SWITCH_EVENT.set()
+    print(f"[SYSTEM SWITCH DEBUG] SYSTEM_SWITCH_EVENT.set() called, is_set={SYSTEM_SWITCH_EVENT.is_set()}", flush=True)
+
+
+def _do_deny_system_switch(target_system, denial_reason=''):
+    """Core logic for denying a system switch. Called by both socket handler and HTTP API."""
+    global SYSTEM_SWITCH_RESPONSE, SYSTEM_SWITCH_EVENT
+    print(f"[SYSTEM SWITCH] Denying switch to: {target_system}{(' — Reason: ' + denial_reason) if denial_reason else ''}", flush=True)
+    SYSTEM_SWITCH_RESPONSE['approved'] = False
+    SYSTEM_SWITCH_RESPONSE['target_system'] = target_system
+    SYSTEM_SWITCH_RESPONSE['error'] = f'Switch denied. Reason: {denial_reason}' if denial_reason else 'Switch denied'
+    SYSTEM_SWITCH_EVENT.set()
+
+
+def _auto_start_task(objective):
     """
-    Called by frontend when a chat-initiated task finishes.
+    Start a task automatically (used when auto_accept_tasks=True).
+    Mirrors the logic in api_chat_approve for task_proposal approval.
+    Returns task_id on success, None if a task is already running.
     """
     global GLOBAL_STATE
+    with TASK_START_LOCK:
+        if GLOBAL_STATE.get('task_running'):
+            print(f"[AUTO TASK] Cannot auto-start: task already running", flush=True)
+            return None
+        GLOBAL_STATE['task_running'] = True
 
-    final_report = GLOBAL_STATE.get('last_session', {}).get('final_report', 'No report available.')
-    current_objective = GLOBAL_STATE.get('current_objective', '')
+    GLOBAL_STATE['current_objective'] = objective
+    GLOBAL_STATE['current_execution_mode'] = 'independent'
+    GLOBAL_STATE['current_summarization_mode'] = 'automatic'
+    GLOBAL_STATE['current_allow_ask_mode'] = False
+    GLOBAL_STATE['task_paused'] = False
+    USER_RESPONSE.clear()
+    USER_ANSWER.clear()
+    cfg = get_config()
+    GLOBAL_STATE['system_username'] = cfg.get('System', 'username', fallback='unknown')
+    GLOBAL_STATE['system_ip'] = cfg.get('System', 'ip_address', fallback='unknown')
+    socketio.emit('task_started')
+
+    task_id = str(uuid.uuid4())[:8]
+    from agent_core import API_TASK_REGISTRY as _ATR
+    _ATR[task_id] = {
+        'status': 'running', 'objective': objective, 'result': None,
+        'current_step': 0, 'latest_activity': 'Starting...', 'start_time': time.time()
+    }
+    GLOBAL_STATE['current_api_task_id'] = task_id
+    GLOBAL_STATE['task_from_api_chat'] = True   # triggers auto-analyze on completion
+    GLOBAL_STATE['_api_chat_pending_type'] = None
+    GLOBAL_STATE['_api_chat_pending_data'] = None
+    GLOBAL_STATE['_pending_task_proposal'] = None
+
+    socketio.start_background_task(
+        run_agent_and_update_state,
+        socketio, GLOBAL_STATE, CONTROL_FLAGS, EVENT_OBJECTS, task_id
+    )
+    # Do NOT set api_chat_active=False here — let process_chat_message's finally block
+    # do it so it can mark _api_chat_status='completed' for the original request first.
+    print(f"[AUTO TASK] Auto-started task: {objective[:80]}, task_id={task_id}", flush=True)
+    return task_id
+
+
+# Store server-side auto-approval callables so agent_core can invoke them
+# without a circular import (agent_core cannot import from app).
+GLOBAL_STATE['_fn_approve_switch'] = _do_approve_system_switch
+GLOBAL_STATE['_fn_start_task'] = _auto_start_task
+
+
+@socketio.on('approve_system_switch')
+def handle_approve_system_switch(data):
+    """
+    Handle approved system switch request from chat.
+    Sets the response and triggers the event for waiting agent_core.
+    """
+    _do_approve_system_switch(data.get('target_system', '').strip())
+
+@socketio.on('deny_system_switch')
+def handle_deny_system_switch(data):
+    """
+    Handle denied system switch request from chat.
+    Sets the response and triggers the event.
+    """
+    _do_deny_system_switch(data.get('target_system', 'Unknown'), data.get('reason', '').strip())
+
+def _auto_analyze_task_result(global_state):
+    """
+    Core logic for post-task chat analysis.
+    Called directly (server-side) for API sessions, or via socket for WebUI sessions.
+    Guard flag prevents double-execution when both server and browser trigger simultaneously.
+    """
+    if global_state.get('_auto_analyze_running'):
+        print("[AUTO ANALYZE] Already running — skipping duplicate trigger", flush=True)
+        return
+    global_state['_auto_analyze_running'] = True
+    try:
+        _auto_analyze_task_result_inner(global_state)
+    finally:
+        global_state['_auto_analyze_running'] = False
+
+
+def _auto_analyze_task_result_inner(global_state):
+    """Actual implementation — called only when guard flag is clear."""
+    final_report = global_state.get('last_session', {}).get('final_report', 'No report available.')
+    current_objective = global_state.get('current_objective', '')
 
     # Mark action plan step as completed if it matches
-    log_manager = GLOBAL_STATE.get('log_manager')
+    log_manager = global_state.get('log_manager')
     if log_manager and current_objective:
         step_marked = log_manager.mark_plan_step_completed(current_objective)
         if step_marked:
             print(f"Action plan step marked complete: {current_objective}")
-
-            # Emit updated action plan data to UI
             plan_data = log_manager.action_plan.get_active_plan()
             if plan_data:
                 socketio.emit('action_plan_data', {
@@ -1835,23 +3518,75 @@ def handle_analyze_task_result():
                     'created_at': plan_data.get('created_at', '')
                 })
 
-    # Improved Prompt: Contextual closing instead of "System Event"
-    system_trigger = f"""
-[ACTION COMPLETED]
-The execution of the initiated task is finished.
-Final Report: {final_report}
+    # Load system message template from config (editable via UI)
+    cfg = get_config()
+    task_completed_template = cfg.get('SystemMessages', 'task_completed', fallback='[ACTION COMPLETED]\nThe execution of the initiated task is finished.\nFinal Report: {final_report}\n\nINSTRUCTION:\nBased on the previous conversation, briefly inform the user that the task is done and summarize the outcome.\nBe natural, and continue the conversation.')
+    system_trigger = task_completed_template.replace('{final_report}', final_report)
 
-INSTRUCTION:
-Based on the previous conversation, briefly inform the user that the task is done and summarize the outcome.
-Be natural, and continue the conversation.
-"""
+    # If in API mode, mark api_chat_active so switch/task proposals go to HTTP polling
+    # instead of emitting WebUI modals that would block execution waiting for manual approval.
+    # Also set _api_chat_unattended so switch proposals are auto-denied immediately — there is
+    # no API client polling during auto-analyze, so we must not block on switch_event.wait().
+    if global_state.get('api_ui_locked'):
+        import uuid as _uuid
+        auto_request_id = 'auto_' + str(_uuid.uuid4())[:8]
 
-    socketio.start_background_task(
-        agent_core.process_chat_message,
-        socketio,
-        GLOBAL_STATE,
-        system_trigger
-    )
+        # Persist 'completed' for the original request before overwriting api_chat_request_id.
+        # Without this, the original request stays 'processing' in API_CHAT_REGISTRY forever
+        # because process_chat_message's finally block already ran (api_chat_active was False).
+        prev_req_id = global_state.get('api_chat_request_id', '')
+        if prev_req_id and not prev_req_id.startswith('auto_') and prev_req_id in API_CHAT_REGISTRY:
+            if API_CHAT_REGISTRY[prev_req_id].get('status') == 'processing':
+                API_CHAT_REGISTRY[prev_req_id]['status'] = 'completed'
+                API_CHAT_REGISTRY[prev_req_id]['completed_at'] = time.time()
+                print(f"[API CHAT] Persisted completed for original request {prev_req_id} before auto-analyze", flush=True)
+
+        global_state['api_chat_active'] = True
+        global_state['_api_chat_unattended'] = True
+        global_state['api_chat_request_id'] = auto_request_id
+        global_state['_api_chat_status'] = 'processing'
+
+        # Register in API_CHAT_REGISTRY so the client can poll it to know when analysis is done.
+        # Include the ID in the triggering task's registry entry for discoverability.
+        API_CHAT_REGISTRY[auto_request_id] = {
+            'status': 'processing',
+            'message': '[auto-analyze]',
+            'response': None,
+            'pending_type': None,
+            'pending_data': None,
+            'error': None,
+            'created_at': time.time(),
+            'completed_at': None
+        }
+        task_id = global_state.get('current_api_task_id')
+        if task_id:
+            from agent_core import API_TASK_REGISTRY as _ATR
+            if task_id in _ATR:
+                _ATR[task_id]['auto_analyze_request_id'] = auto_request_id
+        print(f"[API CHAT] Auto-analyze running in unattended API mode, request_id={auto_request_id}", flush=True)
+
+    try:
+        agent_core.process_chat_message(socketio, global_state, system_trigger, True)
+    finally:
+        global_state.pop('_api_chat_unattended', None)
+        # Mark auto-analyze as completed in registry
+        auto_id = global_state.get('api_chat_request_id', '')
+        if auto_id.startswith('auto_') and auto_id in API_CHAT_REGISTRY:
+            API_CHAT_REGISTRY[auto_id]['status'] = 'completed'
+            API_CHAT_REGISTRY[auto_id]['completed_at'] = time.time()
+            resp = global_state.get('_api_chat_response')
+            if resp:
+                API_CHAT_REGISTRY[auto_id]['response'] = resp
+
+
+@socketio.on('analyze_task_result')
+def handle_analyze_task_result():
+    """
+    Called by frontend when a chat-initiated task finishes.
+    Delegates to _auto_analyze_task_result via background task.
+    """
+    global GLOBAL_STATE
+    socketio.start_background_task(_auto_analyze_task_result, GLOBAL_STATE)
 
 @socketio.on('get_action_plan')
 def handle_get_action_plan():
@@ -1971,6 +3706,832 @@ def handle_clear_action_plan():
     # Notify frontend
     socketio.emit('action_plan_cleared')
 
+# --- Knowledge Document Endpoints ---
+
+def initialize_knowledge_manager():
+    """Initialize or reinitialize the KnowledgeManager based on config."""
+    global GLOBAL_STATE
+    cfg = get_config()
+    enabled = cfg.getboolean('Knowledge', 'enabled', fallback=False)
+    embedding_model = cfg.get('Knowledge', 'embedding_model', fallback='')
+
+    if enabled and embedding_model:
+        try:
+            from knowledge_manager import KnowledgeManager
+            km = KnowledgeManager(
+                storage_dir=KNOWLEDGE_DIR,
+                embedding_provider=cfg.get('Knowledge', 'embedding_provider', fallback='ollama'),
+                embedding_model=embedding_model,
+                vector_store_type=cfg.get('Knowledge', 'vector_store', fallback='chromadb'),
+                summarization_threshold=cfg.getint('Agent', 'summarization_threshold', fallback=15000),
+                ollama_url=cfg.get('Ollama', 'api_url', fallback='http://localhost:11434'),
+                gemini_api_key=cfg.get('General', 'gemini_api_key', fallback='')
+            )
+            GLOBAL_STATE['knowledge_manager'] = km
+            print(f"Knowledge Manager initialized: {km.get_document_count()} documents loaded.")
+
+            # Migrate existing documents: re-embed 'direct' mode docs and generate missing summaries.
+            # Runs in a background thread to avoid blocking startup.
+            # chat_llm may be None if not configured — fallback to auto-summary in that case.
+            def _run_migration(km_ref):
+                try:
+                    chat_llm = GLOBAL_STATE.get('chat_llm')
+                    n = km_ref.generate_missing_summaries(chat_llm)
+                    if n:
+                        print(f"[KNOWLEDGE] Migration complete: {n} document(s) updated.", flush=True)
+                except Exception as mig_err:
+                    print(f"[KNOWLEDGE] Migration error: {mig_err}", flush=True)
+
+            import threading as _threading
+            _threading.Thread(target=_run_migration, args=(km,), daemon=True).start()
+
+        except Exception as e:
+            print(f"Error initializing Knowledge Manager: {e}")
+            traceback.print_exc()
+            GLOBAL_STATE['knowledge_manager'] = None
+    else:
+        GLOBAL_STATE['knowledge_manager'] = None
+
+
+@app.route('/upload_knowledge', methods=['POST'])
+def upload_knowledge():
+    """Upload a document to the knowledge store."""
+    try:
+        km = GLOBAL_STATE.get('knowledge_manager')
+        if not km:
+            return jsonify({'status': 'error', 'message': 'Knowledge system is not configured. Set an embedding model in Agent & LLM settings.'}), 400
+
+        if km.get_document_count() >= km.MAX_DOCUMENTS:
+            return jsonify({'status': 'error', 'message': f'Maximum document limit ({km.MAX_DOCUMENTS}) reached.'}), 400
+
+        # Early size check before reading the file into memory
+        content_length = request.content_length
+        if content_length and content_length > km.MAX_FILE_SIZE_MB * 1024 * 1024:
+            return jsonify({'status': 'error', 'message': f'File too large: {content_length / (1024 * 1024):.1f} MB exceeds limit of {km.MAX_FILE_SIZE_MB} MB.'}), 400
+
+        if 'file' not in request.files:
+            return jsonify({'status': 'error', 'message': 'No file provided.'}), 400
+
+        file = request.files['file']
+        if not file.filename:
+            return jsonify({'status': 'error', 'message': 'No file selected.'}), 400
+
+        # Get file type from extension
+        filename = file.filename
+        file_ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+
+        if file_ext not in km.ALLOWED_TYPES:
+            return jsonify({'status': 'error', 'message': f'Unsupported file type: .{file_ext}. Allowed: {", ".join(km.ALLOWED_TYPES)}'}), 400
+
+        content_bytes = file.read()
+        # Pass chat LLM for semantic summary generation; falls back to auto-summary if None
+        chat_llm = GLOBAL_STATE.get('chat_llm')
+        doc_meta = km.add_document(filename, content_bytes, file_ext, llm=chat_llm)
+
+        # Emit update to all clients
+        socketio.emit('knowledge_updated', {
+            'documents': km.get_documents_list(),
+            'count': km.get_document_count()
+        })
+
+        # Emit limit warning if store is near/at capacity
+        _emit_knowledge_limit_warning(km)
+
+        return jsonify({'status': 'success', 'document': doc_meta})
+
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': f'Upload failed: {str(e)}'}), 500
+
+
+@app.route('/remove_knowledge', methods=['POST'])
+def remove_knowledge():
+    """Remove a document from the knowledge store."""
+    try:
+        km = GLOBAL_STATE.get('knowledge_manager')
+        if not km:
+            return jsonify({'status': 'error', 'message': 'Knowledge system is not configured.'}), 400
+
+        data = request.json
+        doc_id = data.get('doc_id')
+        if not doc_id:
+            return jsonify({'status': 'error', 'message': 'No document ID provided.'}), 400
+
+        success = km.remove_document(doc_id)
+        if not success:
+            return jsonify({'status': 'error', 'message': 'Document not found.'}), 404
+
+        # Emit update to all clients
+        socketio.emit('knowledge_updated', {
+            'documents': km.get_documents_list(),
+            'count': km.get_document_count()
+        })
+
+        return jsonify({'status': 'success', 'message': 'Document removed.'})
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/list_knowledge')
+def list_knowledge():
+    """Return list of uploaded knowledge documents."""
+    km = GLOBAL_STATE.get('knowledge_manager')
+    if not km:
+        return jsonify({'documents': [], 'count': 0, 'max': 10})
+
+    return jsonify({
+        'documents': km.get_documents_list(),
+        'count': km.get_document_count(),
+        'max': km.MAX_DOCUMENTS
+    })
+
+
+@app.route('/get_knowledge_doc/<doc_id>')
+def get_knowledge_doc(doc_id):
+    """Return the text content and metadata of a knowledge document."""
+    try:
+        km = GLOBAL_STATE.get('knowledge_manager')
+        if not km:
+            return jsonify({'status': 'error', 'message': 'Knowledge system is not configured.'}), 400
+
+        # Find document metadata
+        doc_meta = next((d for d in km.get_documents_list() if d['id'] == doc_id), None)
+        if not doc_meta:
+            return jsonify({'status': 'error', 'message': 'Document not found.'}), 404
+
+        # Get text content
+        content = km.get_document_text(doc_id)
+        if content is None:
+            return jsonify({'status': 'error', 'message': 'Document content not available.'}), 404
+
+        return jsonify({
+            'status': 'success',
+            'filename': doc_meta.get('filename', ''),
+            'type': doc_meta.get('type', ''),
+            'mode': doc_meta.get('mode', ''),
+            'size': doc_meta.get('size', 0),
+            'uploaded_at': doc_meta.get('uploaded_at', ''),
+            'source': doc_meta.get('source', ''),
+            'content': content
+        })
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/clear_knowledge', methods=['POST'])
+def clear_knowledge():
+    """Clear all knowledge documents."""
+    try:
+        km = GLOBAL_STATE.get('knowledge_manager')
+        if not km:
+            return jsonify({'status': 'error', 'message': 'Knowledge system is not configured.'}), 400
+
+        km.clear_all()
+
+        # Emit update to all clients
+        socketio.emit('knowledge_updated', {
+            'documents': [],
+            'count': 0
+        })
+
+        return jsonify({'status': 'success', 'message': 'All knowledge documents cleared.'})
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+# ---
+# --- Web Search Module Routes ---
+# ---
+
+@app.route('/get_telegram_config')
+def get_telegram_config():
+    """Return Telegram bot configuration (token masked)."""
+    cfg = get_config()
+    token = cfg.get('Telegram', 'bot_token', fallback='').strip()
+    return jsonify({
+        'enabled':          cfg.getboolean('Telegram', 'enabled', fallback=False),
+        'bot_token':        token,
+        'allowed_chat_ids': cfg.get('Telegram', 'allowed_chat_ids', fallback='').strip(),
+        'notify_task_done': cfg.getboolean('Telegram', 'notify_task_done', fallback=True),
+    })
+
+
+@app.route('/save_telegram_config', methods=['POST'])
+def save_telegram_config():
+    """Save Telegram bot configuration and (re)start the bot."""
+    data = request.json or {}
+    cfg = get_config()
+    if not cfg.has_section('Telegram'):
+        cfg.add_section('Telegram')
+    cfg.set('Telegram', 'enabled',          'true' if data.get('enabled') else 'false')
+    cfg.set('Telegram', 'bot_token',        str(data.get('bot_token', '')).strip())
+    cfg.set('Telegram', 'allowed_chat_ids', str(data.get('allowed_chat_ids', '')).strip())
+    cfg.set('Telegram', 'notify_task_done', 'true' if data.get('notify_task_done', True) else 'false')
+    try:
+        with open(CONFIG_FILE_PATH, 'w') as f:
+            cfg.write(f)
+    except Exception as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 500
+
+    # (Re)start the bot with the new config
+    try:
+        from telegram_bot import get_telegram_bot
+        bot = get_telegram_bot()
+        bot.stop()
+        started = bot.start()
+        msg = 'Bot started.' if started else 'Config saved. Bot disabled or token missing.'
+    except Exception as e:
+        msg = f'Config saved. Bot restart failed: {e}'
+
+    return jsonify({'status': 'ok', 'message': msg})
+
+
+@app.route('/get_web_search_config')
+def get_web_search_config():
+    """Return web search module configuration."""
+    cfg = get_config()
+    ws_config = web_search_module.get_web_search_config(cfg)
+    return jsonify(ws_config)
+
+
+@app.route('/save_web_search_config', methods=['POST'])
+def save_web_search_config():
+    """Save web search module configuration."""
+    try:
+        data = request.json
+        cfg = get_config()
+
+        if not cfg.has_section('WebSearch'):
+            cfg.add_section('WebSearch')
+
+        cfg.set('WebSearch', 'enabled', str(data.get('enabled', False)))
+        cfg.set('WebSearch', 'provider', data.get('provider', 'ollama'))
+        cfg.set('WebSearch', 'model_name', data.get('model_name', ''))
+        cfg.set('WebSearch', 'temperature', str(data.get('temperature', 0.3)))
+        cfg.set('WebSearch', 'context_size', str(data.get('context_size', 8192)))
+        cfg.set('WebSearch', 'timeout', str(data.get('timeout', 120)))
+        cfg.set('WebSearch', 'max_retries', str(data.get('max_retries', 5)))
+        cfg.set('WebSearch', 'max_results', str(data.get('max_results', 5)))
+        cfg.set('WebSearch', 'max_fetch_pages', str(data.get('max_fetch_pages', 3)))
+        cfg.set('WebSearch', 'max_page_size', str(data.get('max_page_size', 50000)))
+        cfg.set('WebSearch', 'brief_threshold', str(data.get('brief_threshold', 2000)))
+        cfg.set('WebSearch', 'search_engine', data.get('search_engine', 'duckduckgo'))
+        cfg.set('WebSearch', 'region', data.get('region', 'wt-wt'))
+        cfg.set('WebSearch', 'safe_search', data.get('safe_search', 'off'))
+        cfg.set('WebSearch', 'ollama_url', data.get('ollama_url', ''))
+        cfg.set('WebSearch', 'api_key', data.get('api_key', ''))
+        cfg.set('WebSearch', 'fallback_models', data.get('fallback_models', ''))
+
+        # Save prompt
+        if 'prompt_template' in data:
+            if not cfg.has_section('WebSearchPrompt'):
+                cfg.add_section('WebSearchPrompt')
+            cfg.set('WebSearchPrompt', 'template', data['prompt_template'])
+
+        with open(CONFIG_FILE_PATH, 'w') as f:
+            cfg.write(f)
+
+        return jsonify({'status': 'success', 'message': 'Web Search configuration saved!'})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/get_web_search_prompt')
+def get_web_search_prompt():
+    """Return web search prompt template."""
+    cfg = get_config()
+    return jsonify({
+        'template': cfg.get('WebSearchPrompt', 'template', fallback='')
+    })
+
+
+@app.route('/clear_web_knowledge', methods=['POST'])
+def clear_web_knowledge():
+    """Clear all knowledge documents with source=WEB."""
+    try:
+        km = GLOBAL_STATE.get('knowledge_manager')
+        if not km:
+            return jsonify({'status': 'error', 'message': 'Knowledge system is not configured.'}), 400
+
+        count = km.clear_by_source('WEB')
+
+        socketio.emit('knowledge_updated', {
+            'documents': km.get_documents_list(),
+            'count': km.get_document_count()
+        })
+
+        return jsonify({'status': 'success', 'message': f'Cleared {count} web search documents.'})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@socketio.on('get_web_search_status')
+def handle_get_web_search_status():
+    """Return current web search status."""
+    ws_status = GLOBAL_STATE.get('web_search_status')
+    if ws_status:
+        socketio.emit('web_search_status', ws_status.to_dict())
+    else:
+        socketio.emit('web_search_status', web_search_module.WebSearchStatus().to_dict())
+
+
+# ============================================================================
+# CHAT API ENDPOINTS
+# ============================================================================
+
+@app.route('/api/chat/message', methods=['POST'])
+def api_chat_message():
+    """
+    Send a message to the chat agent and get a request_id for polling.
+
+    Body: {"message": "..."}
+    Returns: {"request_id": "...", "status": "processing"}
+    Errors:
+      423 — WebUI client is connected (human has control)
+      409 — Another API chat session is already active
+      400 — Missing message
+    """
+    if _is_webui_active():
+        return jsonify({
+            'error': 'WebUI active — control blocked by human intervention',
+            'code': 'WEBUI_ACTIVE'
+        }), 423
+
+    if GLOBAL_STATE.get('api_chat_active'):
+        return jsonify({
+            'error': 'Another API chat session is already active',
+            'code': 'SESSION_BUSY',
+            'active_request_id': GLOBAL_STATE.get('api_chat_request_id')
+        }), 409
+
+    data = request.json or {}
+    message = data.get('message', '').strip()
+    if not message:
+        return jsonify({'error': 'message field is required'}), 400
+
+    request_id = str(uuid.uuid4())[:12]
+
+    API_CHAT_REGISTRY[request_id] = {
+        'status': 'processing',
+        'message': message,
+        'response': None,
+        'pending_type': None,
+        'pending_data': None,
+        'error': None,
+        'created_at': time.time(),
+        'completed_at': None
+    }
+
+    # Initialize API state in GLOBAL_STATE
+    GLOBAL_STATE['api_chat_active'] = True
+    GLOBAL_STATE['api_ui_locked'] = True
+    GLOBAL_STATE['webui_watching_only'] = False
+    GLOBAL_STATE['api_chat_request_id'] = request_id
+    GLOBAL_STATE['_api_last_activity'] = time.time()
+    GLOBAL_STATE['_api_chat_response'] = None
+    GLOBAL_STATE['_api_chat_status'] = 'processing'
+    GLOBAL_STATE['_api_chat_pending_type'] = None
+    GLOBAL_STATE['_api_chat_pending_data'] = None
+    GLOBAL_STATE['_pending_task_proposal'] = None
+    # Clear stale unattended flag — this is an attended session regardless of any auto-analyze still running
+    GLOBAL_STATE['_api_chat_unattended'] = False
+
+    # Persist lock state so browser shows correct mode after reconnect / Docker restart
+    save_app_state()
+
+    # Notify any connected browser clients to enter read-only mode
+    socketio.emit('api_session_status', {'active': True})
+
+    print(f"[API CHAT] New session: request_id={request_id}, message={message[:80]}", flush=True)
+
+    # Show the API message immediately in any connected browser (with "API" label)
+    socketio.emit('chat_response', {'role': 'api', 'content': message})
+
+    # Persist with role='api' so the label survives page refresh / container rebuild.
+    # Set a flag so process_chat_message skips its own log_chat_message('user', ...) call.
+    log_manager = GLOBAL_STATE.get('log_manager')
+    if log_manager:
+        log_manager.log_chat_message('api', message)
+    GLOBAL_STATE['_api_message_logged'] = True
+
+    # Start background chat processing
+    socketio.start_background_task(
+        agent_core.process_chat_message,
+        socketio,
+        GLOBAL_STATE,
+        message
+    )
+
+    return jsonify({
+        'request_id': request_id,
+        'status': 'processing',
+        'info': f'Poll status at GET /api/chat/status/{request_id}'
+    })
+
+
+@app.route('/api/chat/status/<request_id>', methods=['GET'])
+def api_chat_status(request_id):
+    """
+    Poll the status of a chat API request.
+
+    Returns:
+      status: processing | awaiting_approval | completed | interrupted | error
+      response: assistant reply (when completed)
+      pending_type: task_proposal | switch_proposal (when awaiting_approval)
+      pending_data: {objective} or {target_system, reason}
+    """
+    if request_id not in API_CHAT_REGISTRY:
+        return jsonify({'error': 'Unknown request_id'}), 404
+
+    entry = dict(API_CHAT_REGISTRY[request_id])
+
+    # Sync live state from GLOBAL_STATE while this is the active request
+    if GLOBAL_STATE.get('api_chat_request_id') == request_id:
+        live_status = GLOBAL_STATE.get('_api_chat_status', 'processing')
+        live_response = GLOBAL_STATE.get('_api_chat_response')
+        live_pending_type = GLOBAL_STATE.get('_api_chat_pending_type')
+        live_pending_data = GLOBAL_STATE.get('_api_chat_pending_data')
+
+        entry['status'] = live_status
+        if live_response is not None:
+            entry['response'] = live_response
+        if live_pending_type:
+            entry['pending_type'] = live_pending_type
+            entry['pending_data'] = live_pending_data
+
+        # Persist terminal states back to registry
+        if live_status in ('completed', 'error', 'interrupted'):
+            API_CHAT_REGISTRY[request_id].update({
+                'status': live_status,
+                'response': live_response,
+                'pending_type': live_pending_type,
+                'pending_data': live_pending_data,
+                'completed_at': API_CHAT_REGISTRY[request_id].get('completed_at') or time.time()
+            })
+
+    return jsonify(entry)
+
+
+@app.route('/api/chat/approve/<request_id>', methods=['POST'])
+def api_chat_approve(request_id):
+    """
+    Approve or deny a pending task_proposal or switch_proposal.
+
+    Body: {
+      "decision": "approve" | "deny",
+      "reason": "optional denial reason"   (for switch denial)
+    }
+
+    For task_proposal approval, returns a task_id trackable via /api/task_status/<task_id>.
+    """
+    if request_id not in API_CHAT_REGISTRY:
+        return jsonify({'error': 'Unknown request_id'}), 404
+
+    # Pending type lives in GLOBAL_STATE while session is active; fall back to registry
+    if GLOBAL_STATE.get('api_chat_request_id') == request_id:
+        pending_type = GLOBAL_STATE.get('_api_chat_pending_type')
+        pending_data = GLOBAL_STATE.get('_api_chat_pending_data') or {}
+    else:
+        pending_type = API_CHAT_REGISTRY[request_id].get('pending_type')
+        pending_data = API_CHAT_REGISTRY[request_id].get('pending_data') or {}
+
+    if not pending_type:
+        return jsonify({'error': 'No pending approval for this request'}), 400
+
+    data = request.json or {}
+    decision = data.get('decision', 'approve').lower()
+    reason = data.get('reason', '').strip()
+    GLOBAL_STATE['_api_last_activity'] = time.time()
+
+    if pending_type == 'switch_proposal':
+        target_system = pending_data.get('target_system', '')
+        # Clear pending before triggering event (agent thread resumes immediately)
+        GLOBAL_STATE['_api_chat_pending_type'] = None
+        GLOBAL_STATE['_api_chat_pending_data'] = None
+        GLOBAL_STATE['_api_chat_status'] = 'processing'
+        API_CHAT_REGISTRY[request_id]['pending_type'] = None
+        API_CHAT_REGISTRY[request_id]['pending_data'] = None
+
+        if decision == 'approve':
+            _do_approve_system_switch(target_system)
+        else:
+            _do_deny_system_switch(target_system, reason)
+
+        # Note: switch approval has no task_id — agent continues in the same chat session.
+        # Poll GET /api/chat/status/<request_id> to see the next pending action.
+        return jsonify({
+            'status': 'ok',
+            'decision': decision,
+            'task_id': None,
+            'next': f'poll GET /api/chat/status/{request_id}'
+        })
+
+    elif pending_type == 'task_proposal':
+        objective = pending_data.get('objective', '')
+        # Clear pending
+        GLOBAL_STATE['_api_chat_pending_type'] = None
+        GLOBAL_STATE['_api_chat_pending_data'] = None
+        GLOBAL_STATE['_pending_task_proposal'] = None
+        API_CHAT_REGISTRY[request_id]['pending_type'] = None
+        API_CHAT_REGISTRY[request_id]['pending_data'] = None
+
+        if decision == 'approve' and objective:
+            # Start execution task — reuse same setup as handle_execute_task
+            with TASK_START_LOCK:
+                if GLOBAL_STATE.get('task_running'):
+                    return jsonify({'error': 'A task is already running'}), 409
+                GLOBAL_STATE['task_running'] = True
+
+            GLOBAL_STATE['current_objective'] = objective
+            GLOBAL_STATE['current_execution_mode'] = 'independent'
+            GLOBAL_STATE['current_summarization_mode'] = 'automatic'
+            GLOBAL_STATE['current_allow_ask_mode'] = False
+            GLOBAL_STATE['task_paused'] = False
+            USER_RESPONSE.clear()
+            USER_ANSWER.clear()
+            cfg = get_config()
+            GLOBAL_STATE['system_username'] = cfg.get('System', 'username', fallback='unknown')
+            GLOBAL_STATE['system_ip'] = cfg.get('System', 'ip_address', fallback='unknown')
+            socketio.emit('task_started')
+
+            task_id = str(uuid.uuid4())[:8]
+            from agent_core import API_TASK_REGISTRY as _ATR
+            _ATR[task_id] = {
+                'status': 'running', 'objective': objective, 'result': None,
+                'current_step': 0, 'latest_activity': 'Starting...', 'start_time': time.time()
+            }
+            GLOBAL_STATE['current_api_task_id'] = task_id
+            GLOBAL_STATE['task_from_api_chat'] = True  # Triggers auto-analyze when task finishes
+
+            socketio.start_background_task(
+                run_agent_and_update_state,
+                socketio, GLOBAL_STATE, CONTROL_FLAGS, EVENT_OBJECTS, task_id
+            )
+            # Release api_chat_active — task runs independently.
+            # api_ui_locked stays True until "Take Control" or /api/chat/release.
+            GLOBAL_STATE['api_chat_active'] = False
+            return jsonify({'status': 'ok', 'decision': 'approve', 'task_id': task_id,
+                            'info': f'Track at GET /api/task_status/{task_id}'})
+        else:
+            # Deny — release api_chat_active but keep ui locked
+            GLOBAL_STATE['api_chat_active'] = False
+            return jsonify({'status': 'ok', 'decision': 'deny'})
+
+    return jsonify({'error': f'Unknown pending_type: {pending_type}'}), 400
+
+
+@app.route('/api/chat/capabilities', methods=['GET'])
+def api_chat_capabilities():
+    """
+    Machine-readable manifest of all API capabilities.
+    Intended for 3rd-party integrations (e.g. OpenClaw) to auto-discover how to communicate
+    with this agent without any prior documentation.
+    """
+    base = request.host_url.rstrip('/')
+    current_mode = 'api' if GLOBAL_STATE.get('api_ui_locked') else 'web'
+    return jsonify({
+        'name': 'AI Agent Controller — HTTP API',
+        'version': '2.0',
+        'base_url': base,
+        'current_control_mode': current_mode,
+
+        'description': (
+            'HTTP polling API for the AI Agent Controller. Supports two independent modules: '
+            '(1) Chat API — conversational interaction with the LLM assistant; '
+            '(2) Execution API — direct SSH task execution on remote systems. '
+            'The chat agent can search history, query a knowledge base, search the web, '
+            'propose execution tasks, and request system switches, all controllable via polling.'
+        ),
+
+        'control_mode': {
+            'description': (
+                'The application operates in one of two exclusive control modes. '
+                '"web" means a human controls via the browser — API calls return HTTP 423. '
+                '"api" means the API has control — the browser enters read-only mode. '
+                'Switching TO api mode requires human action in the browser ("Give API Control" button). '
+                'API clients can only release control back to web mode.'
+            ),
+            'current': current_mode,
+            'release_to_web': {
+                'method': 'POST',
+                'url': f'{base}/api/set_control_mode',
+                'body': {'mode': 'web'},
+                'note': 'Releases API control — browser regains full access. Only valid when already in API mode.'
+            },
+            'acquire_api_mode': {
+                'how': 'Must be activated by the human user in the browser ("Give API Control" banner button)',
+                'note': 'Cannot be forced via HTTP — POST with mode=api returns HTTP 403 when in web mode'
+            }
+        },
+
+        'chat_api': {
+            'description': 'Send messages to the LLM chat agent and handle proposals.',
+            'single_session': 'Only one chat request can be active at a time (HTTP 409 if busy).',
+            'endpoints': {
+                'send_message': {
+                    'method': 'POST',
+                    'url': f'{base}/api/chat/message',
+                    'body': {'message': 'string — the user message'},
+                    'returns': {'request_id': 'string', 'status': 'processing'},
+                    'errors': {
+                        '423': 'App is in WEB mode — switch to API mode first',
+                        '409': 'Another chat session is already active',
+                        '400': 'Missing message field'
+                    }
+                },
+                'poll_status': {
+                    'method': 'GET',
+                    'url': f'{base}/api/chat/status/{{request_id}}',
+                    'poll_interval': '1-3 seconds recommended',
+                    'returns': {
+                        'status': 'processing | awaiting_approval | completed | interrupted | error',
+                        'response': 'string | null — the assistant reply (when completed)',
+                        'pending_type': 'null | task_proposal | switch_proposal',
+                        'pending_data': {
+                            'task_proposal': {'objective': 'string — proposed task description'},
+                            'switch_proposal': {'target_system': 'string', 'reason': 'string'}
+                        },
+                        'error': 'string | null'
+                    }
+                },
+                'approve_or_deny': {
+                    'method': 'POST',
+                    'url': f'{base}/api/chat/approve/{{request_id}}',
+                    'body': {
+                        'decision': 'approve | deny',
+                        'reason': 'string (optional — sent to agent on deny)'
+                    },
+                    'use_when': 'pending_type is not null',
+                    'on_task_proposal_approve': f'Starts SSH execution task → returns task_id, track at GET {base}/api/task_status/{{task_id}}',
+                    'on_switch_proposal_approve': 'Switches active SSH target system, chat thread resumes',
+                    'on_deny': 'Agent receives denial reason and continues conversation'
+                },
+                'release': {
+                    'method': 'POST',
+                    'url': f'{base}/api/chat/release',
+                    'note': 'Explicitly release API mode and restore WEB control (same as clicking "Take Control" in browser)'
+                }
+            },
+            'interaction_types': {
+                'task_proposal': {
+                    'trigger': 'Agent decides an SSH command or task is needed to answer the request',
+                    'status_when_pending': 'completed — chat turn is done, but pending_type=task_proposal',
+                    'what_to_do': f'POST {base}/api/chat/approve/<id> with decision=approve to start execution, then poll GET {base}/api/task_status/<task_id>',
+                    'after_task_completes': 'Chat agent automatically receives the execution report and generates a follow-up response'
+                },
+                'switch_proposal': {
+                    'trigger': 'Agent wants to switch the active target system (e.g. move from Server A to Server B)',
+                    'status_when_pending': 'awaiting_approval — chat thread is BLOCKED waiting for your decision',
+                    'what_to_do': f'POST {base}/api/chat/approve/<id> with decision=approve|deny',
+                    'timeout': '5 minutes — agent continues without switching if no response'
+                }
+            },
+            'workflow_examples': {
+                'simple_query': [
+                    f'POST {base}/api/chat/message  →  {{request_id}}',
+                    f'GET  {base}/api/chat/status/<id>  →  {{status: "processing"}}  (repeat)',
+                    f'GET  {base}/api/chat/status/<id>  →  {{status: "completed", response: "..."}}'
+                ],
+                'query_with_task_execution': [
+                    f'POST {base}/api/chat/message  →  {{request_id}}',
+                    f'GET  {base}/api/chat/status/<id>  →  {{status: "completed", pending_type: "task_proposal", pending_data: {{objective: "..."}}}}'  ,
+                    f'POST {base}/api/chat/approve/<id>  {{decision: "approve"}}  →  {{task_id: "..."}}',
+                    f'GET  {base}/api/task_status/<task_id>  →  {{status: "running", current_step: 2, latest_activity: "..."}}  (repeat)',
+                    f'GET  {base}/api/task_status/<task_id>  →  {{status: "completed", result: "..."}}',
+                    '(chat agent auto-receives execution report and sends follow-up response)'
+                ],
+                'query_with_system_switch': [
+                    f'POST {base}/api/chat/message  →  {{request_id}}',
+                    f'GET  {base}/api/chat/status/<id>  →  {{status: "awaiting_approval", pending_type: "switch_proposal"}}',
+                    f'POST {base}/api/chat/approve/<id>  {{decision: "approve"}}',
+                    f'GET  {base}/api/chat/status/<id>  →  {{status: "completed", response: "..."}}'
+                ]
+            }
+        },
+
+        'execution_api': {
+            'description': 'Direct SSH task execution without chat interaction.',
+            'endpoints': {
+                'start_task': {
+                    'method': 'POST',
+                    'url': f'{base}/api/execute_ssh',
+                    'body': {
+                        'objective': 'string — task description for the agent',
+                        'mode': 'independent | assisted (optional, default: independent)',
+                        'system_name': 'string (optional — target system alias from saved connections)'
+                    },
+                    'returns': {'task_id': 'string', 'status': 'started'}
+                },
+                'poll_task': {
+                    'method': 'GET',
+                    'url': f'{base}/api/task_status/{{task_id}}',
+                    'returns': {
+                        'status': 'running | completed | failed',
+                        'current_step': 'integer',
+                        'latest_activity': 'string — last action description',
+                        'result': 'string | null — final report when completed',
+                        'duration_seconds': 'float'
+                    }
+                },
+                'stop_task': {
+                    'method': 'POST',
+                    'url': f'{base}/api/stop',
+                    'note': 'Stops any currently running task'
+                },
+                'health_check': {
+                    'method': 'GET',
+                    'url': f'{base}/api/status',
+                    'returns': {
+                        'task_running': 'bool',
+                        'task_paused': 'bool',
+                        'ssh_status': 'success | error | unknown',
+                        'llm_status': 'success | error | unknown',
+                        'current_objective': 'string | null'
+                    }
+                },
+                'list_systems': {
+                    'method': 'GET',
+                    'url': f'{base}/api/list_systems',
+                    'returns': 'Array of saved system connections with name, ip, username, device_type'
+                },
+                'switch_system': {
+                    'method': 'POST',
+                    'url': f'{base}/api/switch_system',
+                    'body': {'system_name': 'string — alias of target system'},
+                    'note': 'Validates SSH connectivity before switching'
+                }
+            }
+        },
+
+        'notes': [
+            'All endpoints return JSON.',
+            'Authentication: none (deploy behind a firewall or VPN).',
+            'The chat agent has memory of the conversation — subsequent messages build on context.',
+            'To reset context between independent sessions, start a new task or clear chat history.',
+            f'This manifest is always available at GET {base}/api/chat/capabilities'
+        ]
+    })
+
+
+@app.route('/api/set_control_mode', methods=['POST'])
+def api_set_control_mode():
+    """
+    Programmatically switch between WEB and API control modes.
+    Body: {"mode": "api" | "web"}
+    """
+    data = request.json or {}
+    mode = data.get('mode', '').strip().lower()
+    if mode not in ('api', 'web'):
+        return jsonify({'error': 'mode must be "api" or "web"'}), 400
+
+    if mode == 'api':
+        # Switching TO api mode via HTTP is forbidden — it must be initiated by the human
+        # in the browser ("Give API Control" button). This prevents any remote agent from
+        # forcibly taking control when the user has explicitly chosen web mode.
+        if not GLOBAL_STATE.get('api_ui_locked'):
+            return jsonify({
+                'error': 'Cannot switch to API mode via HTTP — must be activated by the user in the browser',
+                'code': 'MODE_CHANGE_FORBIDDEN',
+                'hint': 'Click "Give API Control" in the browser banner to grant API access'
+            }), 403
+        # Already in API mode — no-op, return current state
+        return jsonify({'status': 'ok', 'control_mode': 'api', 'message': 'Already in API mode'})
+    else:
+        GLOBAL_STATE['api_ui_locked'] = False
+        GLOBAL_STATE['api_chat_active'] = False
+        GLOBAL_STATE['webui_watching_only'] = False
+        save_app_state()
+        socketio.emit('api_session_status', {'active': False})
+        print("[CONTROL] API set control mode → WEB", flush=True)
+        return jsonify({'status': 'ok', 'control_mode': 'web', 'message': 'Switched to WEB mode — browser has full control'})
+
+
+@app.route('/api/chat/release', methods=['POST'])
+def api_chat_release():
+    """
+    Explicitly release the UI lock held by an API session.
+    Clears both api_chat_active and api_ui_locked, restoring full WebUI control.
+    Equivalent to the "Take Control" button in the browser.
+    """
+    GLOBAL_STATE['api_chat_active'] = False
+    GLOBAL_STATE['api_ui_locked'] = False
+    GLOBAL_STATE['webui_watching_only'] = False
+    save_app_state()
+    socketio.emit('api_session_status', {'active': False})
+    print("[API CHAT] UI lock released via /api/chat/release", flush=True)
+    return jsonify({'status': 'ok', 'message': 'UI lock released — WebUI restored to full control'})
+
+
 # ---
 # --- Initializare Aplicatie (Module Level - runs on import) ---
 # ---
@@ -1985,9 +4546,24 @@ try:
     # Load app state first (to recover session history if available)
     load_app_state()
 
+    # Initialize last_logged_system from config.ini to prevent ghost entries after restart
+    cfg = get_config()
+    init_ip = cfg.get('System', 'ip_address', fallback='').strip()
+    init_username = cfg.get('System', 'username', fallback='').strip()
+    init_name = cfg.get('System', 'system_name', fallback='').strip()
+    if init_ip and init_username:
+        GLOBAL_STATE['last_logged_system'] = {
+            'username': init_username,
+            'ip': init_ip,
+            'name': init_name
+        }
+        print(f"Initialized last_logged_system: {init_name or init_username}@{init_ip}")
+
     # Then test/load connections based on config.ini
     initialize_ssh_status()
     initialize_llm_status()
+    initialize_knowledge_manager()
+    _start_health_check_thread()
     print("Configuration loaded and connections initialized.")
 except Exception as e:
     print(f"Error during module-level initialization: {e}")
@@ -2021,9 +4597,16 @@ if __name__ == '__main__':
         print("=" * 50)
         print("Server ready. Access at http://localhost:5000")
         print("=" * 50)
-        
-        # Pornim serverul
-        socketio.run(app, debug=False, host='0.0.0.0', port=5000)
+
+        # Start Telegram bot (non-blocking background threads)
+        try:
+            from telegram_bot import start_telegram_bot
+            start_telegram_bot(GLOBAL_STATE)
+        except Exception as tg_err:
+            print(f"[TELEGRAM] Startup error (non-fatal): {tg_err}")
+
+        # Pornim serverul (threading mode, allow_unsafe_werkzeug for production use without gunicorn)
+        socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)
         
     except Exception as e:
         print(f"Fatal error during startup: {e}")

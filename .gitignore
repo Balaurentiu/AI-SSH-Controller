@@ -9,7 +9,6 @@ dist/
 build/
 
 # Sensitive Data - API Keys and Credentials
-config.ini
 keys/config.ini
 *.key
 *.pem

@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from config import KEYS_DIR, APP_DIR, EXECUTION_LOG_LLM_CONTEXT_PATH, CHAT_LOG_FILE_PATH, ACTION_PLAN_FILE_PATH
@@ -26,6 +27,11 @@ class BaseLogManager:
     Format matches the specification exactly.
     """
 
+    # Number of buffered entries that trigger an automatic flush to disk.
+    _BUFFER_FLUSH_COUNT = 20
+    # Interval (seconds) for the background timer that flushes any pending writes.
+    _FLUSH_INTERVAL = 2.0
+
     def __init__(self, log_path: str = EXECUTION_LOG_PATH):
         self.log_path = log_path
         self._ensure_log_exists()
@@ -33,34 +39,88 @@ class BaseLogManager:
         self.current_objective = ""
         self.current_system_info = ""
 
+        # Write buffer — accumulates small _append() calls before hitting disk.
+        self._write_buffer: List[str] = []
+        self._buffer_lock = threading.Lock()
+
+        # Background timer: flushes any remaining buffered data every 2 s so
+        # a slow-output task doesn't leave data in RAM indefinitely.
+        self._flush_timer: Optional[threading.Timer] = None
+        self._start_flush_timer()
+
     def _ensure_log_exists(self):
         """Ensure log file exists."""
         if not os.path.exists(self.log_path):
             with open(self.log_path, 'w', encoding='utf-8') as f:
                 pass  # Create empty file
 
-    def _append(self, text: str):
-        """Append text to log file."""
+    def _start_flush_timer(self):
+        """Schedule a one-shot timer to flush the write buffer after _FLUSH_INTERVAL seconds."""
+        self._flush_timer = threading.Timer(self._FLUSH_INTERVAL, self._timer_flush)
+        self._flush_timer.daemon = True
+        self._flush_timer.start()
+
+    def _timer_flush(self):
+        """Called by the background timer. Flushes and reschedules itself."""
+        self.flush()
+        self._start_flush_timer()
+
+    def flush(self):
+        """
+        Write all buffered log entries to disk immediately.
+        Call this before any read operation and at critical checkpoints
+        (task start, step end, task end) so the on-disk file is always
+        up-to-date — regardless of whether the browser is connected.
+        """
+        with self._buffer_lock:
+            if not self._write_buffer:
+                return
+            data = "".join(self._write_buffer)
+            self._write_buffer.clear()
         try:
             with open(self.log_path, 'a', encoding='utf-8') as f:
-                f.write(text)
+                f.write(data)
         except Exception as e:
-            print(f"ERROR appending to full log: {e}")
+            print(f"ERROR flushing log buffer: {e}")
 
-    def log_new_task(self, objective: str, system_info: str):
+    def _append(self, text: str):
+        """
+        Buffer a log write. Data is committed to disk by:
+          - The 2-second background timer (_FLUSH_INTERVAL)
+          - Explicit flush() calls at critical events (step/task boundaries)
+          - Any read call (read_full_log / read_full_log_tail)
+          - Buffer reaching _BUFFER_FLUSH_COUNT entries
+        This eliminates one open()+write()+close() syscall cycle per logged line.
+        """
+        flush_now = False
+        with self._buffer_lock:
+            self._write_buffer.append(text)
+            if len(self._write_buffer) >= self._BUFFER_FLUSH_COUNT:
+                flush_now = True
+                data = "".join(self._write_buffer)
+                self._write_buffer.clear()
+
+        if flush_now:
+            try:
+                with open(self.log_path, 'a', encoding='utf-8') as f:
+                    f.write(data)
+            except Exception as e:
+                print(f"ERROR flushing log buffer (count trigger): {e}")
+
+    def log_new_task(self, objective: str, system_info: str, current_system: str = ""):
         """Log a new task starting."""
         self.current_objective = objective
         self.current_system_info = system_info
         self.current_step = 0
 
-        log_entry = f"""
-=== NEW TASK STARTED ===
-Objective: {objective}
-System Info: {system_info}
-=========================
-
-"""
+        log_entry = "\n=== NEW TASK STARTED ===\n"
+        if current_system:
+            log_entry += f"Current System: {current_system}\n"
+        log_entry += f"Objective: {objective}\n"
+        log_entry += f"System Info: {system_info}\n"
+        log_entry += "=========================\n\n"
         self._append(log_entry)
+        self.flush()  # Task boundary — ensure header is on disk immediately
 
     def log_step_start(self, step_num: int):
         """Log step start."""
@@ -72,8 +132,17 @@ System Info: {system_info}
         self._append(f"REASON: {reason}\n")
 
     def log_command_to_execute(self, command: str):
-        """Log command that will be executed."""
-        self._append(f"COMMAND TO EXECUTE: {command}\n")
+        """Log command that will be executed. Handles multi-line block commands."""
+        if '\n' in command:
+            # Multi-line block command - format it clearly
+            self._append("COMMAND TO EXECUTE (BLOCK):\n")
+            self._append("--- BLOCK START ---\n")
+            for line in command.split('\n'):
+                if line.strip():
+                    self._append(f"  {line}\n")
+            self._append("--- BLOCK END ---\n")
+        else:
+            self._append(f"COMMAND TO EXECUTE: {command}\n")
 
     def log_validator_result(self, approved: bool, mode: str, reason: str = ""):
         """Log validation result."""
@@ -86,8 +155,17 @@ System Info: {system_info}
             self._append(f"VALIDATOR: REJECTED - {reason}\n")
 
     def log_command_executed(self, command: str):
-        """Log actual command executed."""
-        self._append(f"COMMAND EXECUTED: {command}\n")
+        """Log actual command executed. Handles multi-line block commands."""
+        if '\n' in command:
+            # Multi-line block command - format it clearly
+            self._append("COMMAND EXECUTED (BLOCK):\n")
+            self._append("--- BLOCK START ---\n")
+            for line in command.split('\n'):
+                if line.strip():
+                    self._append(f"  {line}\n")
+            self._append("--- BLOCK END ---\n")
+        else:
+            self._append(f"COMMAND EXECUTED: {command}\n")
 
     def log_output(self, output: str, success: bool):
         """Log command output."""
@@ -103,6 +181,7 @@ System Info: {system_info}
     def log_step_end(self):
         """Log step end."""
         self._append("--- STEP END ---\n\n")
+        self.flush()  # Step boundary — full step is now on disk
 
     def log_task_completed(self, report: str):
         """Log task completion."""
@@ -112,6 +191,7 @@ REPORT: {report}
 
 """
         self._append(log_entry)
+        self.flush()  # Task boundary — ensure final report is on disk immediately
 
     def log_ask_question(self, question: str, reason: str = ""):
         """Log agent asking a question."""
@@ -169,7 +249,8 @@ Timestamp: {timestamp}
         self._append(log_entry)
 
     def read_full_log(self) -> str:
-        """Read and return the entire Full Log."""
+        """Read and return the entire Full Log. Flushes write buffer first."""
+        self.flush()
         try:
             if os.path.exists(self.log_path):
                 with open(self.log_path, 'r', encoding='utf-8') as f:
@@ -179,8 +260,31 @@ Timestamp: {timestamp}
             print(f"ERROR reading full log: {e}")
             return ""
 
+    def read_full_log_tail(self, bytes_limit: int = 2_000_000) -> str:
+        """
+        Read only the last `bytes_limit` bytes of the Full Log. Flushes write buffer first.
+        Used for display-only views (VM screen, commands view) where reading
+        the entire file would be wasteful. SRCH: and other search functions
+        must continue using read_full_log() to preserve full search coverage.
+        """
+        self.flush()
+        try:
+            size = os.stat(self.log_path).st_size  # single syscall — no TOCTOU race
+            with open(self.log_path, 'r', encoding='utf-8') as f:
+                if size > bytes_limit:
+                    f.seek(size - bytes_limit)
+                    f.readline()  # skip the partial first line after seek
+                return f.read()
+        except FileNotFoundError:
+            return ""
+        except Exception as e:
+            print(f"ERROR reading full log tail: {e}")
+            return ""
+
     def reset_log(self):
-        """Reset the full log (creates backup first)."""
+        """Reset the full log (creates backup first). Discards any buffered writes."""
+        with self._buffer_lock:
+            self._write_buffer.clear()  # Drop pending buffer — log is being reset
         if os.path.exists(self.log_path) and os.path.getsize(self.log_path) > 0:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_path = os.path.join(KEYS_DIR, f"execution_log_backup_{timestamp}.txt")
@@ -211,7 +315,7 @@ class ViewGenerator:
 
     def get_actions_view(self) -> str:
         """Extract Actions Mode view."""
-        full_log = self.base_log.read_full_log()
+        full_log = self.base_log.read_full_log_tail()
         actions = []
 
         for line in full_log.splitlines():
@@ -250,10 +354,12 @@ class ViewGenerator:
 
     def get_commands_view(self) -> str:
         """Extract Commands Mode view."""
-        full_log = self.base_log.read_full_log()
+        full_log = self.base_log.read_full_log_tail()
         lines = []
         current_step = None
         in_task = False
+        collecting_cmd_block = False
+        cmd_block_lines = []
 
         for line in full_log.splitlines():
             line_stripped = line.strip()
@@ -264,6 +370,18 @@ class ViewGenerator:
                 match = re.search(r'--- STEP (\d+) ---', line_stripped)
                 if match:
                     current_step = match.group(1)
+            elif line_stripped.startswith("COMMAND EXECUTED (BLOCK):") and current_step:
+                # Multi-line block — collect first line as summary
+                collecting_cmd_block = True
+                cmd_block_lines = []
+            elif collecting_cmd_block:
+                if line_stripped.startswith("--- BLOCK END ---"):
+                    collecting_cmd_block = False
+                    if cmd_block_lines:
+                        lines.append(f"STEP {current_step}: {cmd_block_lines[0]}  [+{len(cmd_block_lines)-1} lines]")
+                    cmd_block_lines = []
+                elif not line_stripped.startswith("--- BLOCK START ---") and line_stripped:
+                    cmd_block_lines.append(line.rstrip().lstrip())
             elif line_stripped.startswith("COMMAND EXECUTED:") and current_step:
                 command = line_stripped.replace("COMMAND EXECUTED:", "").strip()
                 lines.append(f"STEP {current_step}: {command}")
@@ -280,13 +398,15 @@ class ViewGenerator:
 
     def get_vm_screen_view(self) -> str:
         """Extract VM Screen view."""
-        full_log = self.base_log.read_full_log()
+        full_log = self.base_log.read_full_log_tail()
         lines = []
         objective = ""
         username = "user"
         ip = "remote"
         current_command = ""
         collecting_output = False
+        collecting_block = False
+        block_lines = []
         output_lines = []
 
         for line in full_log.splitlines():
@@ -322,6 +442,21 @@ class ViewGenerator:
                     username = user_match.group(1)  # Extracts username after backslash if present
                 if ip_match:
                     ip = ip_match.group(1)
+            elif line_stripped.startswith("COMMAND EXECUTED (BLOCK):"):
+                # Multi-line block command — collect lines until BLOCK END
+                collecting_block = True
+                block_lines = []
+            elif collecting_block:
+                if line_stripped.startswith("--- BLOCK END ---"):
+                    collecting_block = False
+                    if block_lines:
+                        lines.append(f"{username}@{ip}~# {block_lines[0]}")
+                        for bl in block_lines[1:]:
+                            lines.append(f"  > {bl}")
+                    block_lines = []
+                elif not line_stripped.startswith("--- BLOCK START ---"):
+                    # Strip the 2-space indent from log format
+                    block_lines.append(line.rstrip().lstrip())
             elif line_stripped.startswith("COMMAND EXECUTED:"):
                 current_command = line_stripped.replace("COMMAND EXECUTED:", "").strip()
                 lines.append(f"{username}@{ip}~# {current_command}")
@@ -461,6 +596,17 @@ class ChatLogManager:
         except Exception as e:
             print(f"Error saving chat history: {e}")
 
+    def remove_last_message(self):
+        """Remove the last message from persistent chat history (used on cancel)."""
+        try:
+            history = self.load_history()
+            if history:
+                history.pop()
+                with open(self.log_path, 'w', encoding='utf-8') as f:
+                    json.dump(history, f, indent=2)
+        except Exception as e:
+            print(f"Error removing last chat message: {e}")
+
     def clear_history(self):
         print(f"ChatLogManager: Attempting to clear history at {self.log_path}")
         try:
@@ -569,6 +715,7 @@ class ActionPlanManager:
         if next_step:
             status_lines.append(f"\nACTION REQUIRED: Perform Step {next_step}.")
             status_lines.append(f"Use <<REQUEST_TASK: ...>> to initiate Step {next_step}.")
+            status_lines.append(f"If this plan is no longer relevant, use <<ABORT_PLAN: reason>> to cancel it and return to the parent plan.")
         else:
             status_lines.append(f"\nActive plan '{active_plan['title']}' is COMPLETE.")
             if len(stack) > 1:
@@ -677,6 +824,29 @@ class ActionPlanManager:
                  print(f"Popped finished plan: {finished['title']}")
                  self._save_stack(stack)
 
+    def abort_plan(self, reason=""):
+        """Abort the active plan: pop it from stack and return to parent plan (if any).
+        Returns tuple: (aborted_plan_title, new_active_plan_or_None)"""
+        stack = self.load_stack()
+        if not stack:
+            return None, None
+
+        aborted = stack.pop()
+        aborted_title = aborted.get('title', 'Unknown Plan')
+        completed_count = sum(1 for s in aborted['steps'] if s.get('completed', False))
+        total_count = len(aborted['steps'])
+        print(f"Action plan ABORTED: '{aborted_title}' ({completed_count}/{total_count} steps completed). Reason: {reason or 'No reason given'}", flush=True)
+
+        self._save_stack(stack)
+
+        new_active = stack[-1] if stack else None
+        if new_active:
+            print(f"Action plan resumed: '{new_active.get('title', 'Unknown')}' (Stack depth: {len(stack)})", flush=True)
+        else:
+            print("Action plan stack is now empty", flush=True)
+
+        return aborted_title, new_active
+
     def clear_plan(self):
         """Clears the entire stack."""
         self._save_stack([])
@@ -698,15 +868,26 @@ class UnifiedLogManager:
         self.action_plan = ActionPlanManager()  # NEW
 
     # === Task Lifecycle ===
-    def log_new_task(self, objective: str, system_info: str):
-        self.base_log.log_new_task(objective, system_info)
+    def log_new_task(self, objective: str, system_info: str, current_system: str = ""):
+        self.base_log.log_new_task(objective, system_info, current_system)
 
-        # Also append to LLM Context so agent sees the new goal
-        context_entry = f"\n\n=== NEW TASK STARTED ===\nObjective: {objective}\nSystem Info: {system_info}\n=========================\n"
+        # Also append to LLM Context so agent sees the new goal (with timestamp)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        context_entry = "\n\n=== NEW TASK STARTED ===\n"
+        if current_system:
+            context_entry += f"Current System: {current_system}\n"
+        context_entry += f"Timestamp: {timestamp}\n"
+        context_entry += f"Objective: {objective}\n"
+        context_entry += f"System Info: {system_info}\n"
+        context_entry += "=========================\n"
         self.agent_memory.append_to_context(context_entry)
 
     def log_task_completed(self, report: str):
         self.base_log.log_task_completed(report)
+
+    def flush(self):
+        """Flush the write buffer of the underlying BaseLogManager to disk."""
+        self.base_log.flush()
 
     # === Step Operations ===
     def log_step_start(self, step_num: int, reason: str, command: str):
@@ -743,9 +924,31 @@ class UnifiedLogManager:
         self.base_log.log_file_content(path, content)
 
     # === NEW: SSH Connection Change Logging ===
-    def log_ssh_connection_change(self, username: str, ip: str, previous_username: str = "", previous_ip: str = ""):
-        """Log SSH connection change to full log for audit trail."""
+    def log_ssh_connection_change(self, username: str, ip: str, previous_username: str = "", previous_ip: str = "", system_name: str = ""):
+        """Log SSH connection change to full log AND LLM context for agent awareness."""
+        # Log to full log (immutable audit trail)
         self.base_log.log_ssh_connection_change(username, ip, previous_username, previous_ip)
+
+        # Also append to LLM context so the agent knows about system switches
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        context_entry = f"\n\n=== SYSTEM CONTEXT CHANGED ===\n"
+        context_entry += f"Timestamp: {timestamp}\n"
+
+        if previous_username and previous_ip:
+            context_entry += f"Previous System: {previous_username}@{previous_ip}\n"
+        else:
+            context_entry += f"Previous System: (none - first connection)\n"
+
+        # Show both connection string and friendly name if available
+        if system_name:
+            context_entry += f"Current System: {system_name} ({username}@{ip})\n"
+        else:
+            context_entry += f"Current System: {username}@{ip}\n"
+
+        context_entry += f"==============================\n"
+
+        self.agent_memory.append_to_context(context_entry)
 
     # === NEW: Manual Edit Logging ===
     def log_manual_edit(self, new_context_content: str):
@@ -817,8 +1020,8 @@ class UnifiedLogManager:
             FILE_START_MARKER = "--- FILE CONTENT WRITTEN TO"
             FILE_END_MARKER = "--- END FILE CONTENT ---"
 
-            block_start = max(0, start_idx - 5)
-            block_end = min(len(lines), end_idx + 10)
+            block_start = max(0, start_idx - 20)
+            block_end = min(len(lines), end_idx + 40)
 
             # 1. Search backwards for start marker (up to 2000 lines back)
             found_start = False
@@ -893,6 +1096,10 @@ class UnifiedLogManager:
         """Get all chat messages from persistent history."""
         return self.chat_log.load_history()
 
+    def remove_last_chat_message(self):
+        """Remove the last chat message (used when user cancels/recalls a sent message)."""
+        self.chat_log.remove_last_message()
+
     def clear_chat_history(self):
         """Clear all chat history."""
         self.chat_log.clear_history()
@@ -909,6 +1116,10 @@ class UnifiedLogManager:
     def mark_plan_step_completed(self, step_objective: str) -> bool:
         """Mark a plan step as completed. Returns True if matched."""
         return self.action_plan.mark_step_completed(step_objective)
+
+    def abort_action_plan(self, reason=""):
+        """Abort the active plan and return to parent. Returns (aborted_title, new_active_plan)."""
+        return self.action_plan.abort_plan(reason)
 
     def clear_action_plan(self):
         """Clear the active action plan."""

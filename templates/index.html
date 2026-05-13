@@ -17,7 +17,10 @@
 
     <!-- VIEW 1: EXECUTION CONTROL (Existing content wrapped in ID) -->
     <div id="view-execution" class="section" style="border-top: none; display: flex; flex-direction: column;">
-        <h2>Objective</h2>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin: 0;">Objective</h2>
+            <button id="objective-fullscreen-btn" style="background: transparent; border: 1px solid #444; color: #aaa; padding: 2px 6px; font-size: 14px; cursor: pointer; line-height: 1; width: auto;" title="Toggle Fullscreen">&#x26F6;</button>
+        </div>
         <textarea id="objective-textarea" placeholder="Enter your high-level objective here..."></textarea>
 
         <!-- Existing Execution Config & Controls -->
@@ -63,25 +66,44 @@
         <div class="chat-header">
             <div class="chat-header-title">
                 <i class="fa-solid fa-robot" style="color: #2196F3;"></i>
-                <button id="action-plan-status-btn" class="header-btn" style="font-size: 12px; padding: 4px 10px;" title="Click to view or create action plan">
+                <button id="action-plan-status-btn" class="header-btn" title="Click to view or create action plan">
                     <i class="fa-solid fa-list-check" style="margin-right: 5px;"></i>
                     Plan: <span id="action-plan-status-text" style="margin-left: 3px;">No active plan</span>
                 </button>
                 <span id="chat-typing-indicator" style="display:none; color: #4CAF50; font-size: 12px; margin-left: 10px;">
                     <i class="fa-solid fa-circle-notch fa-spin"></i> Thinking...
                 </span>
+                <span id="web-search-indicator" style="display:none; color: #3498db; font-size: 12px; margin-left: 10px; cursor: pointer;" onclick="openModal('web-search-status')" title="Click for details">
+                    <i class="fa-solid fa-globe fa-spin"></i> Searching web...
+                </span>
             </div>
 
             <div class="chat-header-actions">
-                <label class="header-btn" style="cursor: pointer; display: flex; align-items: center; gap: 5px;" title="Automatically accept task proposals from chat">
-                    <input type="checkbox" id="auto-accept-tasks-checkbox" style="margin: 0;">
-                    <span>Auto-Accept</span>
+                <label class="header-icon-btn" title="Auto-Accept task proposals">
+                    <input type="checkbox" id="auto-accept-tasks-checkbox" hidden>
+                    <i class="fa-solid fa-circle-check"></i>
                 </label>
-                <button class="header-btn" id="clear-chat-btn" title="Clear Chat History">
-                    <i class="fa-solid fa-trash"></i> Clear
+                <label class="header-icon-btn" title="Auto-Switch systems">
+                    <input type="checkbox" id="auto-switch-checkbox" hidden>
+                    <i class="fa-solid fa-right-left"></i>
+                </label>
+                <label class="header-icon-btn" title="Markdown rendering">
+                    <input type="checkbox" id="markdown-toggle-checkbox" hidden checked>
+                    <i class="fa-solid fa-paragraph"></i>
+                </label>
+                <button class="header-icon-btn" id="export-chat-btn" title="Export Selected Messages" style="position: relative;">
+                    <i class="fa-solid fa-file-export"></i>
+                    <span id="chat-export-counter">0</span>
                 </button>
-                <button class="header-btn" id="chat-fullscreen-btn" title="Toggle Fullscreen">
-                    <i class="fa-solid fa-expand"></i> Fullscreen
+                <label class="header-icon-btn" title="Debug: Show raw LLM responses">
+                    <input type="checkbox" id="chat-debug-checkbox" hidden>
+                    <i class="fa-solid fa-bug"></i>
+                </label>
+                <button class="header-icon-btn" id="clear-chat-btn" title="Clear Chat History">
+                    <i class="fa-solid fa-trash"></i>
+                </button>
+                <button class="header-icon-btn" id="chat-fullscreen-btn" title="Toggle Fullscreen">
+                    <i class="fa-solid fa-expand"></i>
                 </button>
             </div>
         </div>
@@ -120,6 +142,9 @@
                     <button id="send-chat-btn">
                         <i class="fa-solid fa-paper-plane"></i> Send
                     </button>
+                    <button id="cancel-chat-btn" title="Recall message and stop agent" style="display:none; background-color: #8b1a1a;">
+                        <i class="fa-solid fa-rotate-left"></i> Recall
+                    </button>
                 </div>
             </div>
         </div>
@@ -137,7 +162,10 @@
             </div>
         </div>
         <textarea id="log-textarea" readonly></textarea>
-        <div id="execution-status" style="padding: 5px; color: #f39c12; font-family: monospace; font-size: 0.9em; min-height: 20px; border-top: 1px solid #333; background-color: #1e1e1e;"></div>
+        <div style="display: flex; align-items: center; border-top: 1px solid #333; background-color: #1e1e1e;">
+            <div id="execution-status" style="padding: 5px; color: #f39c12; font-family: monospace; font-size: 0.9em; min-height: 20px; flex: 1;"></div>
+            <button id="abort-command-btn" style="display: none; padding: 3px 10px; font-size: 0.8em; background-color: #e74c3c; border: none; color: white; border-radius: 3px; cursor: pointer; margin-right: 5px; white-space: nowrap; width: auto;" title="Kill running command and pause execution">Abort Cmd</button>
+        </div>
     </div>
 </div>
 <div class="column column-right" id="main-right-column">
@@ -150,6 +178,24 @@
     </div>
 </div>
 <!-- History & Reports Overlay (Fullscreen) -->
+<!-- Mermaid Fullscreen Modal -->
+<div id="mermaid-modal-overlay" class="modal-overlay"></div>
+<div id="mermaid-modal" class="modal-content" style="width: 90vw; height: 90vh; max-width: none; flex-direction: column; background: #1e1e1e; overflow: hidden; padding: 15px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; border-bottom: 1px solid #444; flex-shrink: 0;">
+        <h2 style="margin: 0; color: #7aa5d2; border: none; padding: 0;"><i class="fa-solid fa-project-diagram"></i> Diagram View</h2>
+        <div style="display: flex; gap: 10px; align-items: center;">
+            <button id="mermaid-zoom-out" style="width: auto; margin: 0; padding: 6px 12px; background: #333;" title="Zoom Out"><i class="fa-solid fa-minus"></i></button>
+            <span id="mermaid-zoom-level" style="font-family: monospace; width: 50px; text-align: center; color: #aaa;">100%</span>
+            <button id="mermaid-zoom-in" style="width: auto; margin: 0; padding: 6px 12px; background: #333;" title="Zoom In"><i class="fa-solid fa-plus"></i></button>
+            <button id="mermaid-zoom-reset" style="width: auto; margin: 0; padding: 6px 12px; background: #0e639c;" title="Reset View"><i class="fa-solid fa-compress"></i></button>
+            <button onclick="closeMermaidModalLocal()" style="width: auto; margin: 0; padding: 6px 12px; background: #c0392b;">Close</button>
+        </div>
+    </div>
+    <div id="mermaid-modal-body" style="flex-grow: 1; position: relative; overflow: hidden; cursor: grab; display: flex; justify-content: center; align-items: center; background: #121212; margin-top: 10px; border-radius: 4px; border: 1px solid #333;">
+        <!-- SVG will be injected here -->
+    </div>
+</div>
+
 <div id="history-overlay" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 25000; background-color: #121212; overflow: hidden;">
     <div style="display: flex; flex-direction: column; height: 100%; padding: 20px; box-sizing: border-box;">
         <!-- Close Button -->
@@ -244,11 +290,330 @@
         <button id="perform-search-btn" style="background-color: #2196F3; width: 100%;">Search Logs</button>
     </div>
 </div>
+
 {% endblock %}
 
 {% block scripts %}
 <script>
 document.addEventListener('DOMContentLoaded', () => {
+    // Configure marked.js for chat rendering
+    if (typeof marked !== 'undefined') {
+        const renderer = new marked.Renderer();
+        const originalCodeRenderer = renderer.code.bind(renderer);
+        
+        renderer.code = function({text, lang, escaped}) {
+            if (lang === 'mermaid') {
+                return '<div class="mermaid">' + text + '</div>';
+            }
+            // Diff view: color +/- lines
+            // Join with '' not '\n' — spans are display:block so each is its own line.
+            // Adding \n would cause double spacing in PDF (fix_pre_newlines adds <br/> on \n).
+            if (lang === 'diff') {
+                const lines = text.split('\n').map(line => {
+                    if (line.startsWith('+++') || line.startsWith('---')) {
+                        return '<span class="diff-ctx">' + line + '</span>';
+                    } else if (line.startsWith('+')) {
+                        return '<span class="diff-add">' + line + '</span>';
+                    } else if (line.startsWith('-')) {
+                        return '<span class="diff-del">' + line + '</span>';
+                    } else if (line.startsWith('@@')) {
+                        return '<span class="diff-hunk">' + line + '</span>';
+                    }
+                    return '<span class="diff-ctx">' + line + '</span>';
+                }).join('');
+                return '<pre><button class="copy-code-btn" onclick="copyCodeToClipboard(this)"><i class="fa-regular fa-copy"></i> Copy</button><code class="language-diff">' + lines + '</code></pre>';
+            }
+            // Standard code block with copy button
+            return '<pre><button class="copy-code-btn" onclick="copyCodeToClipboard(this)"><i class="fa-regular fa-copy"></i> Copy</button><code class="language-' + (lang || 'plaintext') + '">' + text + '</code></pre>';
+        };
+        
+        marked.setOptions({ renderer: renderer, breaks: true, gfm: true });
+    }
+
+    // Initialize Mermaid
+    if (typeof mermaid !== 'undefined') {
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'dark',
+            securityLevel: 'loose',
+            flowchart: { useMaxWidth: true, htmlLabels: true, curve: 'basis' },
+            sequence: { useMaxWidth: true },
+            gantt: { useMaxWidth: true }
+        });
+    }
+
+    // Auto-fix common mermaid syntax mistakes made by LLMs.
+    window.fixMermaidSyntax = function(code) {
+        let c = code.trim();
+        // Strip accidental code fences (LLM sometimes wraps the content again)
+        c = c.replace(/^```(?:mermaid)?\s*/i, '').replace(/\s*```$/, '').trim();
+        // Old 'graph' keyword → 'flowchart' (mermaid v10+ prefers flowchart)
+        c = c.replace(/^graph\s+(LR|RL|TD|TB|BT)\b/m, 'flowchart $1');
+        // Missing direction after flowchart → default TD
+        c = c.replace(/^flowchart\s*$/m, 'flowchart TD');
+        // Arrow with label: A-->|label|B (missing spaces) → A -->|label| B
+        c = c.replace(/(\w)-->/g, '$1 -->');
+        // Double-quoted node labels: fix unmatched quotes
+        c = c.replace(/"\s*$/gm, '"');
+        // Remove trailing semicolons on node/edge lines (not valid in mermaid)
+        c = c.replace(/;$/gm, '');
+        return c;
+    };
+
+    // Safe mermaid runner: uses mermaid.parse() to validate first (avoids the bomb SVG),
+    // tries auto-fix on failure, then falls back to raw code block.
+    window.runMermaidSafe = async function() {
+        if (typeof mermaid === 'undefined') return;
+        const diagrams = document.querySelectorAll('.mermaid:not([data-processed="true"])');
+        let anyOk = false;
+        for (const el of diagrams) {
+            const rawCode = (el.textContent || el.innerText || '').trim();
+            if (!rawCode) { el.setAttribute('data-processed', 'true'); continue; }
+
+            // Helper: validate + render a given code string
+            async function tryRender(code) {
+                try {
+                    await mermaid.parse(code);  // throws on syntax error
+                    const id = 'mermaid-' + Math.random().toString(36).slice(2);
+                    const { svg } = await mermaid.render(id, code);
+                    return svg;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            let svg = await tryRender(rawCode);
+
+            // Try auto-fix if original failed
+            if (!svg) {
+                const fixed = fixMermaidSyntax(rawCode);
+                if (fixed !== rawCode) svg = await tryRender(fixed);
+            }
+
+            if (svg) {
+                el.innerHTML = svg;
+                el.setAttribute('data-processed', 'true');
+                anyOk = true;
+            } else {
+                // Fallback: raw code block
+                const pre = document.createElement('pre');
+                const code = document.createElement('code');
+                code.className = 'language-mermaid';
+                code.textContent = rawCode;
+                pre.appendChild(code);
+                pre.style.cssText = 'background:#1a1a2e;border:1px solid #555;border-radius:4px;padding:10px;font-size:12px;color:#e0e0e0;';
+                const label = document.createElement('div');
+                label.textContent = '⚠ Mermaid diagram (invalid syntax — shown as code)';
+                label.style.cssText = 'font-size:11px;color:#e74c3c;margin-bottom:6px;font-style:italic;';
+                pre.insertBefore(label, code);
+                el.replaceWith(pre);
+            }
+        }
+        if (anyOk) initMermaidInteractive();
+    };
+
+    /**
+     * Renders LaTeX formulas using KaTeX auto-render
+     */
+    window.renderMathInChat = function(element) {
+        if (typeof renderMathInElement === 'function') {
+            renderMathInElement(element, {
+                delimiters: [
+                    {left: "$$", right: "$$", display: true},
+                    {left: "$", right: "$", display: false},
+                    {left: "\\(", right: "\\)", display: false},
+                    {left: "\\[", right: "\\]", display: true}
+                ],
+                throwOnError: false
+            });
+        }
+    };
+
+    /**
+     * Copies code content to clipboard
+     */
+    window.copyCodeToClipboard = function(btn) {
+        const pre = btn.closest('pre');
+        const code = pre.querySelector('code');
+        if (!code) return;
+
+        const text = code.innerText;
+
+        const markCopied = () => {
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
+            btn.style.color = '#81c784';
+            setTimeout(() => { btn.innerHTML = originalHtml; btn.style.color = ''; }, 2000);
+        };
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(markCopied).catch(() => fallbackCopy(text, markCopied));
+        } else {
+            fallbackCopy(text, markCopied);
+        }
+    };
+
+    function fallbackCopy(text, onSuccess) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try {
+            document.execCommand('copy');
+            if (onSuccess) onSuccess();
+        } catch (err) {
+            console.error('Fallback copy failed:', err);
+        }
+        document.body.removeChild(ta);
+    }
+
+    /**
+     * Mermaid Interactive Logic (Fullscreen, Zoom, Pan)
+     */
+    let mermaidScale = 1;
+    let mermaidPanX = 0;
+    let mermaidPanY = 0;
+    let isMermaidDragging = false;
+    let mermaidStartX = 0;
+    let mermaidStartY = 0;
+    let currentMermaidSvg = null;
+
+    window.initMermaidInteractive = function() {
+        document.querySelectorAll('.mermaid svg').forEach(svg => {
+            if (svg.parentElement.classList.contains('mermaid-wrapper')) return;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'mermaid-wrapper';
+
+            svg.parentNode.insertBefore(wrapper, svg);
+            wrapper.appendChild(svg);
+
+            const btnHtml = '<button class="mermaid-fullscreen-btn"><i class="fa-solid fa-expand"></i> Fullscreen</button>';
+            wrapper.insertAdjacentHTML('afterbegin', btnHtml);
+        });
+    };
+
+    // Global Event Delegation for dynamic buttons (Copy & Mermaid Fullscreen)
+    document.addEventListener('click', function(e) {
+        // Handle Mermaid Fullscreen
+        const mermaidBtn = e.target.closest('.mermaid-fullscreen-btn');
+        if (mermaidBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log("Global delegate: Mermaid Fullscreen clicked");
+            // The SVG is the next sibling of the button in our structure
+            const wrapper = mermaidBtn.closest('.mermaid-wrapper');
+            const svg = wrapper ? wrapper.querySelector('svg') : null;
+            if (svg) {
+                openMermaidModal(svg);
+            } else {
+                console.error("Could not find SVG in wrapper.");
+            }
+            return; // Stop processing
+        }
+    });
+
+    window.openMermaidModal = function(originalSvg) {
+        try {
+            console.log("Opening Mermaid Modal for:", originalSvg);
+            const modalBody = document.getElementById('mermaid-modal-body');
+            modalBody.innerHTML = '';
+            
+            currentMermaidSvg = originalSvg.cloneNode(true);
+            
+            // Override strict dimensions set by mermaid to allow zooming
+            currentMermaidSvg.removeAttribute('width');
+            currentMermaidSvg.removeAttribute('height');
+            currentMermaidSvg.style.maxWidth = 'none';
+            currentMermaidSvg.style.width = '100%';
+            currentMermaidSvg.style.height = '100%';
+            currentMermaidSvg.style.transformOrigin = 'center center';
+            currentMermaidSvg.style.transition = 'transform 0.1s ease-out';
+            
+            modalBody.appendChild(currentMermaidSvg);
+            
+            mermaidScale = 1;
+            mermaidPanX = 0;
+            mermaidPanY = 0;
+            updateMermaidTransform();
+            
+            // Explicitly show the modal using robust inline styles combined with classes
+            const mModal = document.getElementById('mermaid-modal');
+            const mOverlay = document.getElementById('mermaid-modal-overlay');
+            if (mModal && mOverlay) {
+                mModal.classList.add('active');
+                mOverlay.classList.add('active');
+                mModal.style.display = 'flex';
+                mOverlay.style.display = 'block';
+                console.log("Modal display forced to visible.");
+            } else {
+                console.error("Could not find modal or overlay elements in DOM.");
+            }
+            
+        } catch (e) {
+            console.error("Error opening Mermaid Modal:", e);
+        }
+    };
+
+    window.closeMermaidModalLocal = function() {
+        const mModal = document.getElementById('mermaid-modal');
+        const mOverlay = document.getElementById('mermaid-modal-overlay');
+        if (mModal) { mModal.classList.remove('active'); mModal.style.display = 'none'; }
+        if (mOverlay) { mOverlay.classList.remove('active'); mOverlay.style.display = 'none'; }
+        document.getElementById('mermaid-modal-body').innerHTML = ''; // Clean up SVG
+    };
+
+    window.updateMermaidTransform = function() {
+        if (!currentMermaidSvg) return;
+        currentMermaidSvg.style.transform = `translate(${mermaidPanX}px, ${mermaidPanY}px) scale(${mermaidScale})`;
+        document.getElementById('mermaid-zoom-level').innerText = Math.round(mermaidScale * 100) + '%';
+    };
+
+    // Attach Mermaid Modal Listeners
+    const mModalBody = document.getElementById('mermaid-modal-body');
+    if (mModalBody) {
+        mModalBody.addEventListener('mousedown', (e) => {
+            isMermaidDragging = true;
+            mermaidStartX = e.clientX - mermaidPanX;
+            mermaidStartY = e.clientY - mermaidPanY;
+            mModalBody.style.cursor = 'grabbing';
+        });
+        window.addEventListener('mousemove', (e) => {
+            if (!isMermaidDragging) return;
+            mermaidPanX = e.clientX - mermaidStartX;
+            mermaidPanY = e.clientY - mermaidStartY;
+            updateMermaidTransform();
+        });
+        window.addEventListener('mouseup', () => {
+            isMermaidDragging = false;
+            mModalBody.style.cursor = 'grab';
+        });
+        
+        mModalBody.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const zoomFactor = 0.1;
+            if (e.deltaY < 0) mermaidScale += zoomFactor;
+            else mermaidScale -= zoomFactor;
+            mermaidScale = Math.max(0.1, Math.min(mermaidScale, 10)); // bounds
+            updateMermaidTransform();
+        });
+    }
+    
+    document.getElementById('mermaid-zoom-in')?.addEventListener('click', () => {
+        mermaidScale = Math.min(mermaidScale + 0.2, 10);
+        updateMermaidTransform();
+    });
+    document.getElementById('mermaid-zoom-out')?.addEventListener('click', () => {
+        mermaidScale = Math.max(mermaidScale - 0.2, 0.1);
+        updateMermaidTransform();
+    });
+    document.getElementById('mermaid-zoom-reset')?.addEventListener('click', () => {
+        mermaidScale = 1; mermaidPanX = 0; mermaidPanY = 0;
+        updateMermaidTransform();
+    });
+
     // --- Referinte elemente UI ---
     const executeButton = document.getElementById('execute-button');
     const stopButton = document.getElementById('stop-button');
@@ -260,6 +625,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const summarizationModeRadios = document.querySelectorAll('input[name="summarization_mode"]');
     const allowAskCheckbox = document.getElementById('allow-ask-checkbox');
     const validatorCheckbox = document.getElementById('validator-checkbox'); // NEW
+    const abortCommandBtn = document.getElementById('abort-command-btn');
     const modeActionsBtn = document.getElementById('mode-actions-btn');
     const modeCommandsBtn = document.getElementById('mode-commands-btn');
 
@@ -335,13 +701,40 @@ document.addEventListener('DOMContentLoaded', () => {
                         currentStep = stepMatch[1];
                     }
                 }
-                // Extract command that was executed
+                // Extract command that was executed (single line)
                 else if (currentStep && line.startsWith('Executing Command:')) {
                     const command = line.replace('Executing Command:', '').trim();
                     if (command) {
                         filteredLines.push(`STEP ${currentStep}: ${command}`);
                         currentStep = null; // Reset after finding command
                     }
+                }
+                // Extract block command (multi-line)
+                else if (currentStep && line.startsWith('Executing Block Command:')) {
+                    // Start collecting block command lines
+                    let blockCommands = [];
+                    let j = i + 1;
+                    // Skip the "--- COMMAND BLOCK ---" marker
+                    while (j < lines.length && !lines[j].trim().startsWith('---')) {
+                        j++;
+                    }
+                    j++; // Skip past "--- COMMAND BLOCK ---"
+                    // Collect command lines until "--- END BLOCK ---"
+                    while (j < lines.length && !lines[j].trim().startsWith('--- END')) {
+                        const cmdLine = lines[j].trim();
+                        if (cmdLine) {
+                            blockCommands.push(cmdLine);
+                        }
+                        j++;
+                    }
+                    if (blockCommands.length > 0) {
+                        filteredLines.push(`STEP ${currentStep}:`);
+                        blockCommands.forEach(cmd => {
+                            filteredLines.push(`  ${cmd}`);
+                        });
+                        currentStep = null;
+                    }
+                    i = j; // Skip processed lines
                 }
                 // Detect task end
                 else if (line.includes('REPORT:') || line.includes('=== TASK END ===')) {
@@ -525,6 +918,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const timeoutCountdown = document.getElementById('timeout-countdown');
     if (savedTimeout && commandTimeoutInput) {
         commandTimeoutInput.value = savedTimeout;
+    } else if (commandTimeoutInput) {
+        // No sessionStorage value — load from persistent config
+        fetch('/get_agent_config').then(r => r.json()).then(cfg => {
+            if (cfg.command_timeout) {
+                commandTimeoutInput.value = cfg.command_timeout;
+                sessionStorage.setItem('commandTimeout', cfg.command_timeout);
+            }
+        }).catch(() => {});
     }
     const savedObjective = sessionStorage.getItem('savedObjective');
     if (savedObjective) {
@@ -612,6 +1013,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // Handler pentru Abort Command (kill running command + pause)
+    if (abortCommandBtn) {
+        abortCommandBtn.onclick = () => {
+            abortCommandBtn.disabled = true;
+            abortCommandBtn.textContent = 'Aborting...';
+            socket.emit('abort_command');
+        };
+    }
+
     // Handler pentru Update Timeout
     if (updateTimeoutBtn) {
         updateTimeoutBtn.onclick = () => {
@@ -647,14 +1057,110 @@ document.addEventListener('DOMContentLoaded', () => {
         pauseButton.style.backgroundColor = '#e67e22'; // Culoare portocalie
         objectiveTextarea.disabled = true;
         setControlsDisabled(true);
+        isTaskRunning = true;
+
+        // Auto-switch to Execution Control tab so user can see progress
+        switchTab('execution');
 
         // Keep existing logs visible - context persists across tasks
+    });
+
+    // === LIVE VIEW: Handle tasks started via API ===
+    // This event syncs the objective field when an external API call starts a task
+    // NOTE: Logs are NOT cleared - they persist across multiple tasks until manual reset
+    socket.on('api_task_started', (data) => {
+        console.log('[LIVE VIEW] API task started:', data.objective);
+
+        // Update the objective textarea to show what's being executed
+        if (objectiveTextarea && data.objective) {
+            objectiveTextarea.value = data.objective;
+        }
+
+        // Mark this as an API-initiated task (not from UI click)
+        sessionStorage.setItem('isApiTask', 'true');
+
+        // Visual indicator that this is an API task
+        const statusIndicator = document.createElement('div');
+        statusIndicator.id = 'api-task-indicator';
+        statusIndicator.innerHTML = '🔌 API Task Running';
+        statusIndicator.style.cssText = 'background: #3498db; color: white; padding: 5px 10px; border-radius: 4px; font-size: 12px; position: absolute; top: 5px; right: 10px; z-index: 100;';
+
+        // Add indicator to objective section if not already present
+        const objectiveSection = objectiveTextarea?.parentElement;
+        if (objectiveSection && !document.getElementById('api-task-indicator')) {
+            objectiveSection.style.position = 'relative';
+            objectiveSection.appendChild(statusIndicator);
+        }
+    });
+
+    // === FAILBACK INDICATORS ===
+    function _showFailbackIndicator(id, label, color) {
+        if (document.getElementById(id)) return;
+        const ind = document.createElement('div');
+        ind.id = id;
+        ind.textContent = label;
+        ind.style.cssText = `background: ${color}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; position: fixed; bottom: 10px; right: 10px; z-index: 9000; cursor: default;`;
+        document.body.appendChild(ind);
+        // Also log to live view
+        const liveLog = document.getElementById('live-log');
+        if (liveLog) {
+            const entry = document.createElement('p');
+            entry.style.color = color;
+            entry.textContent = `[FAILBACK] ${label}`;
+            liveLog.appendChild(entry);
+        }
+    }
+
+    socket.on('exec_failback_active', function(data) {
+        if (data.active) {
+            const reason = data.reason === 'validator_rejections' ? `after ${data.count || 3} rejections` : 'on LLM error';
+            _showFailbackIndicator('exec-failback-indicator', `⚠ Exec LLM on FAILBACK (${reason})`, '#c0392b');
+        }
+    });
+
+    socket.on('chat_failback_active', function(data) {
+        if (data.active) {
+            const reason = data.reason === 'timeout' ? 'timeout' : 'LLM error';
+            _showFailbackIndicator('chat-failback-indicator', `⚠ Chat LLM on FAILBACK (${reason})`, '#8e44ad');
+        }
+    });
+
+    // === LIVE VIEW: External objective update (API trigger wake-up) ===
+    // This event syncs the objective field when an external system (API) triggers a task
+    // NOTE: Logs are NOT cleared - they persist across multiple tasks until manual reset
+    socket.on('external_objective_update', function(data) {
+        console.log('[LIVE VIEW] External objective update received:', data.objective);
+
+        // 1. Only update the text field
+        if (objectiveTextarea && data.objective) {
+            objectiveTextarea.value = data.objective;
+        }
+
+        // 2. Force the UI into "Running" state WITHOUT clearing logs
+        isTaskRunning = true;
+        if (typeof updateViewButtons === 'function') {
+            updateViewButtons();
+        }
+
+        // 3. Update button states manually if updateViewButtons doesn't exist
+        if (executeButton) executeButton.style.display = 'none';
+        if (stopButton) stopButton.style.display = 'block';
+        if (pauseButton) {
+            pauseButton.style.display = 'block';
+            pauseButton.textContent = 'Pause';
+            pauseButton.style.backgroundColor = '#e67e22';
+        }
+        if (objectiveTextarea) objectiveTextarea.disabled = true;
+        setControlsDisabled(true);
+
+        console.log('[LIVE VIEW] UI updated - logs preserved');
     });
 
     socket.on('task_finished', () => {
         executeButton.style.display = 'block';
         stopButton.style.display = 'none';
         pauseButton.style.display = 'none';
+        isTaskRunning = false;
 
         // FIX: Reset Stop Button State
         stopButton.textContent = "Stop Task";
@@ -662,11 +1168,25 @@ document.addEventListener('DOMContentLoaded', () => {
         stopButton.style.backgroundColor = "#c0392b"; // Restore red color
         stopButton.style.cursor = "pointer";
 
+        // Hide abort button on task finish
+        if (abortCommandBtn) abortCommandBtn.style.display = 'none';
+
         objectiveTextarea.disabled = false;
         setControlsDisabled(false);
         closeModal('approval');
         closeModal('rejection');
         closeModal('ask');
+
+        // === LIVE VIEW: Clean up API task indicator + failback indicators ===
+        const apiIndicator = document.getElementById('api-task-indicator');
+        if (apiIndicator) {
+            apiIndicator.remove();
+        }
+        sessionStorage.removeItem('isApiTask');
+        ['exec-failback-indicator', 'chat-failback-indicator'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        });
 
         // --- Restore Chat View (Persistent Logic) ---
         const isTaskFromChat = sessionStorage.getItem('isTaskFromChat') === 'true';
@@ -711,6 +1231,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (objectiveTextarea) {
             objectiveTextarea.disabled = false;
         }
+        // Pre-populate timeout field in ASK modal with current value
+        const askTimeoutInput = document.getElementById('ask-timeout-input');
+        if (askTimeoutInput && commandTimeoutInput) {
+            askTimeoutInput.value = commandTimeoutInput.value;
+        }
     });
 
     socket.on('timeout_updated', (data) => {
@@ -743,6 +1268,15 @@ document.addEventListener('DOMContentLoaded', () => {
         updateExecutionStatus('');
     });
 
+    // --- Summarization Status Handler ---
+    socket.on('summarization_status', (data) => {
+        if (data.active) {
+            updateExecutionStatus(data.message || 'Summarizing...');
+        } else {
+            updateExecutionStatus('');
+        }
+    });
+
     // --- Command Execution Timer Handlers ---
     socket.on('command_exec_start', (data) => {
         // Keep updating the header countdown if present
@@ -750,6 +1284,12 @@ document.addEventListener('DOMContentLoaded', () => {
              timeoutCountdown.textContent = `(${data.timeout}s)`;
         }
         updateExecutionStatus(`Executing command... (${data.timeout}s timeout)`);
+        // Show abort button during command execution
+        if (abortCommandBtn) {
+            abortCommandBtn.style.display = 'inline-block';
+            abortCommandBtn.disabled = false;
+            abortCommandBtn.textContent = 'Abort Cmd';
+        }
     });
 
     socket.on('command_exec_update', (data) => {
@@ -764,6 +1304,18 @@ document.addEventListener('DOMContentLoaded', () => {
              timeoutCountdown.textContent = '';
         }
         updateExecutionStatus('');
+        // Hide abort button when command finishes
+        if (abortCommandBtn) {
+            abortCommandBtn.style.display = 'none';
+        }
+    });
+
+    // Handle system change events (from API switching systems)
+    socket.on('system_changed', (data) => {
+        console.log('[Socket] System changed:', data);
+        // Show notification to user about system switch
+        const systemName = data.name || `${data.username}@${data.ip}`;
+        appendLog(`[SYSTEM] Target switched to: ${systemName}`, false);
     });
 
     // Handler-ul central pentru starea initiala (la conectare/reconectare)
@@ -781,6 +1333,34 @@ document.addEventListener('DOMContentLoaded', () => {
         // Sync Validator Checkbox
         if (validatorCheckbox && data.validator_enabled !== undefined) {
             validatorCheckbox.checked = data.validator_enabled;
+        }
+
+        // --- Session Snapshot: Sync UI state from server ---
+        if (data.current_objective !== undefined && data.current_objective) {
+            objectiveTextarea.value = data.current_objective;
+            sessionStorage.setItem('savedObjective', data.current_objective);
+        }
+        if (data.current_execution_mode) {
+            const modeRadio = document.querySelector(`input[name="execution_mode"][value="${data.current_execution_mode}"]`);
+            if (modeRadio) {
+                modeRadio.checked = true;
+                sessionStorage.setItem('executionMode', data.current_execution_mode);
+            }
+        }
+        if (data.current_summarization_mode) {
+            const summRadio = document.querySelector(`input[name="summarization_mode"][value="${data.current_summarization_mode}"]`);
+            if (summRadio) {
+                summRadio.checked = true;
+                sessionStorage.setItem('summarizationMode', data.current_summarization_mode);
+            }
+        }
+        if (data.current_allow_ask_mode !== undefined && allowAskCheckbox) {
+            allowAskCheckbox.checked = data.current_allow_ask_mode;
+            sessionStorage.setItem('allowAsk', String(data.current_allow_ask_mode));
+        }
+        if (data.command_timeout !== undefined && commandTimeoutInput) {
+            commandTimeoutInput.value = data.command_timeout;
+            sessionStorage.setItem('commandTimeout', data.command_timeout);
         }
 
         const isPaused = data.task_running && data.task_paused;
@@ -847,6 +1427,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const chatInput = document.getElementById('chat-input');
     const sendChatBtn = document.getElementById('send-chat-btn');
+    const cancelChatBtn = document.getElementById('cancel-chat-btn');
+    let lastSentMessage = '';
+    let chatPendingBubble = null;
     const chatHistory = document.getElementById('chat-history');
     const chatHistoryContainer = document.getElementById('chat-history-container');
     const chatTypingIndicator = document.getElementById('chat-typing-indicator');
@@ -906,6 +1489,9 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     tabExecution.onclick = () => switchTab('execution');
     tabChat.onclick = () => switchTab('chat');
+
+    // Default to Assistant Chat tab on load
+    switchTab('chat');
 
     // --- CHAT RESIZER LOGIC ---
     const resizerHandle = document.getElementById('chat-resizer-handle');
@@ -971,56 +1557,196 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isChatFullscreen) {
             mainLeftColumn.classList.add('fullscreen-chat-mode');
-
-            // Update icon and text
-            if (icon) {
-                icon.className = 'fa-solid fa-compress';
-            }
-            chatFullscreenBtn.innerHTML = '<i class="fa-solid fa-compress"></i> Exit';
+            chatFullscreenBtn.innerHTML = '<i class="fa-solid fa-compress"></i>';
             chatFullscreenBtn.style.borderColor = "#f39c12";
+            chatFullscreenBtn.title = "Exit Fullscreen";
         } else {
             mainLeftColumn.classList.remove('fullscreen-chat-mode');
-
-            // Update icon and text
-            if (icon) {
-                icon.className = 'fa-solid fa-expand';
-            }
-            chatFullscreenBtn.innerHTML = '<i class="fa-solid fa-expand"></i> Fullscreen';
+            chatFullscreenBtn.innerHTML = '<i class="fa-solid fa-expand"></i>';
             chatFullscreenBtn.style.borderColor = "#444";
+            chatFullscreenBtn.title = "Toggle Fullscreen";
         }
     }
     chatFullscreenBtn.onclick = toggleFullscreen;
 
+    // --- Icon Button Checkbox Sync ---
+    // Sync checkbox state with .active class on parent label for all header icon buttons
+    function syncIconBtn(checkbox) {
+        if (!checkbox) return;
+        const label = checkbox.closest('.header-icon-btn');
+        if (label) {
+            label.classList.toggle('active', checkbox.checked);
+        }
+    }
+    document.querySelectorAll('.header-icon-btn input[type="checkbox"]').forEach(cb => {
+        syncIconBtn(cb); // Initial state
+        cb.addEventListener('change', () => syncIconBtn(cb));
+    });
+
     // --- 3. Chat Messages ---
-    function addChatMessage(role, text) {
+    const markdownToggle = document.getElementById('markdown-toggle-checkbox');
+
+    // Restore preference from localStorage
+    const savedMdPref = localStorage.getItem('chatMarkdownEnabled');
+    markdownToggle.checked = savedMdPref !== null ? savedMdPref === 'true' : true;
+    syncIconBtn(markdownToggle); // Sync after restoring preference
+
+    // Live toggle: re-render all messages when switched
+    markdownToggle.addEventListener('change', function() {
+        localStorage.setItem('chatMarkdownEnabled', this.checked);
+        rerenderAllChatMessages();
+    });
+
+    function renderMessageContent(text, isMd) {
+        if (isMd && typeof marked !== 'undefined') {
+            // Pre-process math before marked.parse() to prevent marked from:
+            //   (a) breaking $$...$$ blocks with <br> tags (breaks:true)
+            //   (b) escaping & to &amp; inside LaTeX alignment environments (\begin{cases}, etc.)
+            const mathBlocks = [];
+            const codeBlocks = [];
+
+            // Step 0: protect code blocks (fenced and inline) from math extraction.
+            // Bash variables like ${VAR[@]} contain $ and would be mis-parsed as LaTeX delimiters.
+            let safe = text
+                .replace(/```[\s\S]*?```/g, (match) => {
+                    const idx = codeBlocks.length;
+                    codeBlocks.push(match);
+                    return `CODEBLOCK_${idx}_END`;
+                })
+                .replace(/`[^`\n]+`/g, (match) => {
+                    const idx = codeBlocks.length;
+                    codeBlocks.push(match);
+                    return `CODEBLOCK_${idx}_END`;
+                });
+
+            // Pass 1: extract $$...$$ display math
+            safe = safe.replace(/\$\$([\s\S]+?)\$\$/g, (match, content) => {
+                const idx = mathBlocks.length;
+                mathBlocks.push({ latex: content.trim(), display: true });
+                return `\n\nKATEX_DBLOCK_${idx}_END\n\n`;
+            });
+
+            // Pass 2: extract multi-line or environment $...$ inline math
+            // These contain \n, \begin{, or & alignment — marked.parse would corrupt them
+            safe = safe.replace(/\$([^$]+)\$/g, (match, content) => {
+                if (content.includes('\n') || content.includes('\\begin{') || content.includes(' & ')) {
+                    const idx = mathBlocks.length;
+                    mathBlocks.push({ latex: content.trim(), display: true }); // render as display (too complex for inline)
+                    return `\n\nKATEX_DBLOCK_${idx}_END\n\n`;
+                }
+                return match; // single-line inline: leave for renderMathInElement
+            });
+
+            // Restore code blocks before markdown parsing so marked renders them normally
+            codeBlocks.forEach((block, idx) => {
+                safe = safe.split(`CODEBLOCK_${idx}_END`).join(block);
+            });
+
+            let html = marked.parse(safe);
+
+            // Restore math blocks
+            mathBlocks.forEach(({ latex, display }, idx) => {
+                const placeholder = `KATEX_DBLOCK_${idx}_END`;
+                let rendered;
+                if (typeof katex !== 'undefined') {
+                    try {
+                        rendered = katex.renderToString(latex, { displayMode: display, throwOnError: false });
+                    } catch(e) {
+                        rendered = `<span class="katex-error">${latex}</span>`;
+                    }
+                } else {
+                    rendered = `<p>${display ? '$$' : '$'}${latex}${display ? '$$' : '$'}</p>`;
+                }
+                html = html.split(placeholder).join(rendered);
+            });
+
+            return '<div class="md-content">' + html + '</div>';
+        }
+        return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+    }
+
+    function rerenderAllChatMessages() {
+        const isMd = markdownToggle.checked;
+        document.querySelectorAll('.chat-bubble[data-raw-text]').forEach(bubble => {
+            const raw = bubble.getAttribute('data-raw-text');
+            const role = bubble.classList.contains('user') ? 'user' : 'agent';
+            const label = role === 'user' ? '<strong>You:</strong> ' : '<strong>Agent:</strong> ';
+            const tsDiv = bubble.querySelector('.chat-timestamp');
+            const tsHtml = tsDiv ? tsDiv.outerHTML : '';
+            bubble.innerHTML = tsHtml + label + renderMessageContent(raw, isMd);
+        });
+        if (isMd && typeof mermaid !== 'undefined') {
+            runMermaidSafe();
+        }
+        if (isMd) {
+            document.querySelectorAll('.chat-bubble .md-content').forEach(el => renderMathInChat(el));
+        }
+    }
+
+    function addChatMessage(role, text, timestamp = null, rawText = null) {
         // --- FIX: Hide Internal System Prompts from UI ---
-        // These messages are for the LLM only (Prompt Injection) and shouldn't be seen by the user.
-        if (text.includes('[ACTION COMPLETED]') && text.includes('INSTRUCTION:')) {
-            console.log("Hidden system message:", text.substring(0, 50) + "...");
+        // These are hidden messages injected into the LLM context for system events.
+        // Filter by role=user + known system patterns (covers old history entries too).
+        if (role === 'user' && (
+            (text.includes('[ACTION COMPLETED]') && text.includes('INSTRUCTION:')) ||
+            text.startsWith('Search completed. The results have been added') ||
+            text.startsWith('Knowledge search completed. The results have been added') ||
+            text.startsWith('[SYSTEM EVENT]')
+        )) {
+            console.log("Hidden system message:", text.substring(0, 60) + "...");
             return;
         }
-        // ------------------------------------------------
 
         // Remove greeting if present
         const greeting = document.getElementById('chat-greeting');
         if (greeting) greeting.remove();
 
-        const div = document.createElement('div');
-        // Apply the new CSS classes
-        div.className = `chat-bubble ${role === 'user' ? 'user' : 'agent'}`;
+        // Generate timestamp if not provided (format: DD.MM.YYYY HH:MM:SS)
+        const now = timestamp ? new Date(timestamp) : new Date();
+        const day = String(now.getDate()).padStart(2, '0');
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const year = now.getFullYear();
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+        const seconds = String(now.getSeconds()).padStart(2, '0');
+        const timeStr = `${day}.${month}.${year} ${hours}:${minutes}:${seconds}`;
 
-        if (role === 'user') {
-            div.innerHTML = `<strong>You:</strong> ${text.replace(/\n/g, '<br>')}`;
-        } else {
-            div.innerHTML = `<strong>Agent:</strong> ${text.replace(/\n/g, '<br>')}`;
+        const div = document.createElement('div');
+        div.className = role === 'user' ? 'chat-bubble user' : role === 'api' ? 'chat-bubble api-user' : 'chat-bubble agent';
+        // Store raw text for live re-rendering on toggle
+        div.setAttribute('data-raw-text', text);
+
+        const label = role === 'user' ? '<strong>You:</strong> ' : role === 'api' ? '<strong><i class="fa-solid fa-plug" style="font-size:11px;margin-right:3px;"></i>API:</strong> ' : '<strong>Agent:</strong> ';
+        const isMd = markdownToggle.checked;
+        div.innerHTML = `<div class="chat-timestamp">${timeStr}</div>${label}${renderMessageContent(text, isMd)}`;
+
+        // Store raw LLM text on agent bubbles for debug panel
+        if (role !== 'user' && rawText) {
+            div.setAttribute('data-raw-llm', rawText);
         }
 
         chatHistory.appendChild(div);
+
+        // If debug is active, immediately show raw panel after the bubble
+        if (role !== 'user' && rawText && chatDebugCheckbox && chatDebugCheckbox.checked) {
+            chatHistory.appendChild(buildRawDebugDiv(rawText));
+        }
 
         // Auto-scroll to bottom of the scrollable container
         setTimeout(() => {
             chatHistoryContainer.scrollTop = chatHistoryContainer.scrollHeight;
         }, 50);
+
+        // Run mermaid if Markdown is enabled
+        if (markdownToggle.checked && typeof mermaid !== 'undefined') {
+            runMermaidSafe();
+        }
+
+        // Run KaTeX if Markdown is enabled
+        if (markdownToggle.checked) {
+            const mdContent = div.querySelector('.md-content');
+            if (mdContent) renderMathInChat(mdContent);
+        }
     }
 
     // --- Updated Input Logic (Textarea) ---
@@ -1032,25 +1758,146 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    function setChatSendMode(sending) {
+        sendChatBtn.style.display = sending ? 'none' : '';
+        cancelChatBtn.style.display = sending ? '' : 'none';
+    }
+
     sendChatBtn.onclick = () => {
         const msg = chatInput.value.trim();
         if (!msg) return;
 
+        lastSentMessage = msg;
         addChatMessage('user', msg);
+        // Mark the last user bubble for potential removal on cancel
+        const userBubbles = chatHistory.querySelectorAll('.chat-bubble.user');
+        chatPendingBubble = userBubbles.length > 0 ? userBubbles[userBubbles.length - 1] : null;
+
         chatInput.value = '';
-        // Optional: Reset height if you implemented auto-grow
 
         socket.emit('send_chat_message', { message: msg });
+        setChatSendMode(true);
     };
 
-    socket.on('chat_response', (data) => addChatMessage(data.role, data.content));
+    cancelChatBtn.onclick = () => {
+        // Immediately restore UI — don't wait for backend confirmation
+        if (chatPendingBubble) {
+            chatPendingBubble.remove();
+            chatPendingBubble = null;
+        }
+        chatInput.value = lastSentMessage;
+        lastSentMessage = '';
+        setChatSendMode(false);
+
+        socket.emit('cancel_chat');
+    };
+
+    socket.on('chat_cancelled', () => {
+        // Backend confirmed cancellation — UI is already restored, just ensure buttons are right
+        setChatSendMode(false);
+        chatPendingBubble = null;
+    });
+
+    socket.on('chat_response', (data) => {
+        // Response arrived — reset cancel state and display message
+        setChatSendMode(false);
+        chatPendingBubble = null;
+        addChatMessage(data.role, data.content, null, data.raw || null);
+    });
+
+    // Debug: Show/hide raw LLM responses
+    const chatDebugCheckbox = document.getElementById('chat-debug-checkbox');
+
+    function buildRawDebugDiv(rawText) {
+        const div = document.createElement('div');
+        div.className = 'chat-debug-raw';
+        div.style.cssText = 'background: #1a1a2e; border: 1px solid #e74c3c; border-radius: 6px; padding: 10px; margin: -4px 10px 6px 10px; font-family: monospace; font-size: 11px; color: #e0e0e0; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow-y: auto;';
+        div.innerHTML = '<div style="color: #e74c3c; font-weight: bold; margin-bottom: 5px;">RAW LLM Response:</div>' +
+            '<pre style="margin: 0; white-space: pre-wrap; word-break: break-all;">' + rawText.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</pre>';
+        return div;
+    }
+
+    // Toggle debug: build and show/hide raw panels for ALL agent bubbles
+    if (chatDebugCheckbox) {
+        chatDebugCheckbox.addEventListener('change', function() {
+            const isChecked = this.checked;
+            // For each agent bubble that has stored raw text
+            chatHistory.querySelectorAll('.chat-bubble.agent[data-raw-llm]').forEach(bubble => {
+                let debugDiv = bubble.nextElementSibling;
+                if (debugDiv && debugDiv.classList.contains('chat-debug-raw')) {
+                    // Already exists — just show/hide
+                    debugDiv.style.display = isChecked ? 'block' : 'none';
+                } else if (isChecked) {
+                    // Build it now (first time toggling on for this bubble)
+                    const rawText = bubble.getAttribute('data-raw-llm');
+                    if (rawText) {
+                        const newDiv = buildRawDebugDiv(rawText);
+                        bubble.insertAdjacentElement('afterend', newDiv);
+                    }
+                }
+            });
+            // Also hide any orphan debug divs that may exist from old sessions
+            chatHistory.querySelectorAll('.chat-debug-raw').forEach(el => {
+                const prev = el.previousElementSibling;
+                if (!prev || !prev.classList.contains('agent')) {
+                    el.style.display = isChecked ? 'block' : 'none';
+                }
+            });
+        });
+    }
+
+    // Keep supporting the legacy chat_raw_debug event (for system/error messages without raw in chat_response)
+    socket.on('chat_raw_debug', (data) => {
+        if (chatDebugCheckbox && chatDebugCheckbox.checked) {
+            // Only show if the last agent bubble doesn't already have this raw attached
+            const bubbles = chatHistory.querySelectorAll('.chat-bubble.agent');
+            const last = bubbles.length > 0 ? bubbles[bubbles.length - 1] : null;
+            if (!last || last.getAttribute('data-raw-llm') !== data.raw) {
+                const div = buildRawDebugDiv(data.raw);
+                chatHistory.appendChild(div);
+            }
+        }
+    });
 
     socket.on('chat_status', (data) => {
         // Show/hide typing indicator in header
         if (chatTypingIndicator) {
             chatTypingIndicator.style.display = (data.status === 'thinking') ? 'inline' : 'none';
         }
+        // Safety net: reset to send mode when agent goes idle
+        if (data.status === 'idle' || data.status === 'error') {
+            setChatSendMode(false);
+            chatPendingBubble = null;
+        }
     });
+
+    // --- API Session Read-Only Hook ---
+    // Called by layout.html's setApiReadOnlyMode() to lock/unlock interactive controls.
+    window.setChatReadOnly = function(active) {
+        // Chat input
+        chatInput.disabled = active;
+        sendChatBtn.disabled = active;
+        chatInput.placeholder = active
+            ? 'Read-only — API session is active. Click "Take Control" to resume.'
+            : 'Type your message... (Drag bar above to resize)';
+
+        // Execution control buttons
+        const execBtn        = document.getElementById('execute-button');
+        const pauseBtn       = document.getElementById('pause-button');
+        const stopBtn        = document.getElementById('stop-button');
+        const abortBtn       = document.getElementById('abort-command-btn');
+        const acceptBtn      = document.getElementById('accept-proposal-btn');
+        const rejectBtn      = document.getElementById('reject-proposal-btn');
+        const editMemoryBtn  = document.getElementById('edit-history-button');
+        const resetMemoryBtn = document.getElementById('reset-button');
+        [execBtn, pauseBtn, stopBtn, abortBtn, acceptBtn, rejectBtn, editMemoryBtn, resetMemoryBtn].forEach(btn => {
+            if (btn) {
+                btn.disabled = active;
+                btn.style.opacity = active ? '0.4' : '';
+                btn.style.cursor  = active ? 'not-allowed' : '';
+            }
+        });
+    };
 
     // --- 4. Persistent History Restoration ---
     socket.on('initial_state', (data) => {
@@ -1062,7 +1909,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.chat_history.length === 0) {
                  chatHistory.innerHTML = '<div id="chat-greeting" style="color: #666; text-align: center; margin-top: 20px;"><p>Chat with the agent about executed tasks.</p></div>';
             } else {
-                data.chat_history.forEach(msg => addChatMessage(msg.role, msg.content));
+                data.chat_history.forEach(msg => addChatMessage(msg.role, msg.content, msg.timestamp));
             }
         }
     });
@@ -1076,6 +1923,440 @@ document.addEventListener('DOMContentLoaded', () => {
 
     socket.on('chat_history_cleared', () => {
         chatHistory.innerHTML = '<div id="chat-greeting" style="color: #666; text-align: center; margin-top: 20px;"><p>Chat with the agent about executed tasks.</p></div>';
+        // Reset export selection
+        if (typeof chatExportSelectedMessages !== 'undefined') {
+            chatExportSelectedMessages.clear();
+            updateChatExportCounter();
+        }
+    });
+
+    // --- 5.5. Chat Message Selection & Export ---
+    const chatExportSelectedMessages = new Set();
+    const chatContextMenu = document.getElementById('chat-context-menu');
+    const chatExportCounter = document.getElementById('chat-export-counter');
+    const exportChatBtn = document.getElementById('export-chat-btn');
+    let chatContextMenuTarget = null;
+
+    function updateChatExportCounter() {
+        const count = chatExportSelectedMessages.size;
+        if (chatExportCounter) {
+            chatExportCounter.textContent = count;
+            chatExportCounter.style.display = count > 0 ? 'block' : 'none';
+        }
+        const ctxCount = document.getElementById('ctx-selected-count');
+        if (ctxCount) ctxCount.textContent = count;
+        const modalCount = document.getElementById('export-msg-count');
+        if (modalCount) modalCount.textContent = count;
+    }
+
+    function toggleChatMessageSelection(bubble) {
+        if (chatExportSelectedMessages.has(bubble)) {
+            chatExportSelectedMessages.delete(bubble);
+            bubble.classList.remove('selected-for-export');
+        } else {
+            chatExportSelectedMessages.add(bubble);
+            bubble.classList.add('selected-for-export');
+        }
+        updateChatExportCounter();
+    }
+
+    // Right-click context menu on chat bubbles
+    if (chatHistoryContainer) {
+        chatHistoryContainer.addEventListener('contextmenu', function(e) {
+            const bubble = e.target.closest('.chat-bubble');
+            if (!bubble) return;
+
+            e.preventDefault();
+            chatContextMenuTarget = bubble;
+
+            // Position menu at cursor
+            chatContextMenu.style.display = 'block';
+            chatContextMenu.style.left = e.clientX + 'px';
+            chatContextMenu.style.top = e.clientY + 'px';
+
+            // Adjust if menu overflows viewport
+            requestAnimationFrame(() => {
+                const rect = chatContextMenu.getBoundingClientRect();
+                if (rect.right > window.innerWidth) {
+                    chatContextMenu.style.left = (window.innerWidth - rect.width - 5) + 'px';
+                }
+                if (rect.bottom > window.innerHeight) {
+                    chatContextMenu.style.top = (window.innerHeight - rect.height - 5) + 'px';
+                }
+            });
+
+            // Update toggle label
+            const selectItem = document.getElementById('ctx-select-msg');
+            if (selectItem) {
+                if (chatExportSelectedMessages.has(bubble)) {
+                    selectItem.innerHTML = '<i class="fa-regular fa-square"></i> <span>Deselect Message</span>';
+                } else {
+                    selectItem.innerHTML = '<i class="fa-regular fa-square-check"></i> <span>Select Message</span>';
+                }
+            }
+
+            // Disable export if nothing will be selected
+            const exportItem = document.getElementById('ctx-export-selected');
+            if (exportItem) {
+                const willHaveSelection = chatExportSelectedMessages.size > 0 || !chatExportSelectedMessages.has(bubble);
+                exportItem.classList.toggle('disabled', chatExportSelectedMessages.size === 0 && !chatExportSelectedMessages.has(bubble));
+            }
+        });
+    }
+
+    // Hide context menu on click anywhere
+    document.addEventListener('click', function(e) {
+        if (chatContextMenu && !chatContextMenu.contains(e.target)) {
+            chatContextMenu.style.display = 'none';
+        }
+    });
+
+    // Context menu: Select/Deselect message
+    document.getElementById('ctx-select-msg')?.addEventListener('click', function() {
+        if (chatContextMenuTarget) toggleChatMessageSelection(chatContextMenuTarget);
+        chatContextMenu.style.display = 'none';
+    });
+
+    // Context menu: Select All
+    document.getElementById('ctx-select-all')?.addEventListener('click', function() {
+        document.querySelectorAll('#chat-history .chat-bubble[data-raw-text]').forEach(bubble => {
+            chatExportSelectedMessages.add(bubble);
+            bubble.classList.add('selected-for-export');
+        });
+        updateChatExportCounter();
+        chatContextMenu.style.display = 'none';
+    });
+
+    // Context menu: Deselect All
+    document.getElementById('ctx-deselect-all')?.addEventListener('click', function() {
+        chatExportSelectedMessages.forEach(bubble => bubble.classList.remove('selected-for-export'));
+        chatExportSelectedMessages.clear();
+        updateChatExportCounter();
+        chatContextMenu.style.display = 'none';
+    });
+
+    // Context menu: Export Selected
+    document.getElementById('ctx-export-selected')?.addEventListener('click', function() {
+        if (chatExportSelectedMessages.size === 0) return;
+        chatContextMenu.style.display = 'none';
+        openModal('chat-export');
+    });
+
+    // Header Export button
+    if (exportChatBtn) {
+        exportChatBtn.addEventListener('click', function() {
+            if (chatExportSelectedMessages.size === 0) {
+                // Auto-select all if none selected
+                document.querySelectorAll('#chat-history .chat-bubble[data-raw-text]').forEach(bubble => {
+                    chatExportSelectedMessages.add(bubble);
+                    bubble.classList.add('selected-for-export');
+                });
+                updateChatExportCounter();
+                if (chatExportSelectedMessages.size === 0) return;
+            }
+            openModal('chat-export');
+        });
+    }
+
+    // --- Export helpers: SVG serialization and rendered HTML capture ---
+
+    // Converts an SVG element to a base64 SVG data URI (no canvas = no tainted canvas error)
+    // 1. Inlines computed styles to resolve CSS variables (cairosvg can't handle CSS vars)
+    // 2. Replaces <foreignObject> with SVG <text> (cairosvg can't render HTML inside foreignObject,
+    //    which is how Mermaid flowchart/graph nodes render their labels)
+    function svgElementToDataUri(svgEl) {
+        try {
+            const svgNS = 'http://www.w3.org/2000/svg';
+            const props = ['fill', 'stroke', 'color', 'fill-opacity', 'stroke-opacity',
+                           'opacity', 'font-size', 'font-family', 'font-weight', 'stroke-width',
+                           'stop-color', 'stop-opacity'];
+
+            // Read computed styles from originals BEFORE cloning
+            const origEls = [svgEl, ...svgEl.querySelectorAll('*')];
+            const computedStyles = origEls.map(el => {
+                try { return window.getComputedStyle(el); } catch(e) { return null; }
+            });
+
+            // Read foreignObject text styles from originals
+            const origFOs = svgEl.querySelectorAll('foreignObject');
+            const foStyles = Array.from(origFOs).map(fo => {
+                const inner = fo.querySelector('span, div, p, label, .nodeLabel, .label');
+                if (!inner) return null;
+                try {
+                    const cs = window.getComputedStyle(inner);
+                    return {
+                        color: cs.color || '#000000',
+                        fontSize: cs.fontSize || '14px',
+                        fontFamily: cs.fontFamily || 'sans-serif',
+                        fontWeight: cs.fontWeight || 'normal'
+                    };
+                } catch(e) { return null; }
+            });
+
+            // Clone and apply inline computed styles
+            const clone = svgEl.cloneNode(true);
+            const cloneEls = [clone, ...clone.querySelectorAll('*')];
+
+            for (let i = 0; i < origEls.length && i < cloneEls.length; i++) {
+                const cs = computedStyles[i];
+                if (!cs) continue;
+                try {
+                    for (const prop of props) {
+                        const val = cs.getPropertyValue(prop);
+                        if (val) cloneEls[i].style.setProperty(prop, val);
+                    }
+                } catch(e) {}
+            }
+
+            // Replace <foreignObject> nodes with SVG <text> elements
+            // cairosvg ignores HTML content inside foreignObject entirely
+            clone.querySelectorAll('foreignObject').forEach((fo, idx) => {
+                const textContent = fo.textContent.trim();
+                const foW = parseFloat(fo.getAttribute('width') || 0);
+                const foH = parseFloat(fo.getAttribute('height') || 0);
+                const foX = parseFloat(fo.getAttribute('x') || 0);
+                const foY = parseFloat(fo.getAttribute('y') || 0);
+                const cx = foX + foW / 2;
+                const cy = foY + foH / 2;
+
+                const st = foStyles[idx];
+                const textEl = document.createElementNS(svgNS, 'text');
+                textEl.setAttribute('x', cx);
+                textEl.setAttribute('y', cy);
+                textEl.setAttribute('text-anchor', 'middle');
+                textEl.setAttribute('dominant-baseline', 'middle');
+                textEl.style.fill = st ? st.color : '#000000';
+                textEl.style.fontSize = st ? st.fontSize : '13px';
+                textEl.style.fontFamily = st ? st.fontFamily : 'sans-serif';
+                textEl.style.fontWeight = st ? st.fontWeight : 'normal';
+                textEl.textContent = textContent || '';
+
+                if (fo.parentNode) fo.parentNode.replaceChild(textEl, fo);
+            });
+
+            let svgStr = new XMLSerializer().serializeToString(clone);
+            if (!svgStr.includes('xmlns=')) {
+                svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+            }
+            // btoa needs ASCII; encodeURIComponent+unescape handles unicode chars in SVG
+            return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgStr)));
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /**
+     * Capture a single .katex-display element as a PNG data URL via canvas.
+     * Hides .katex-mathml (not hidden without KaTeX CSS) and inlines computed styles.
+     */
+    function captureKatexDisplayAsPng(origEl, theme) {
+        return new Promise(function(resolve) {
+            try {
+                const rect = origEl.getBoundingClientRect();
+                const scale = 2;
+                const pad = 12;
+                const w = Math.max(Math.ceil(rect.width) + pad * 2, 80);
+                const h = Math.max(Math.ceil(rect.height) + pad * 2, 30);
+                const bgColor = theme === 'dark' ? '#2d2d2d' : '#ffffff';
+                // Use theme-based color, not computed style (chat may be dark while exporting light PDF)
+                const textColor = theme === 'dark' ? '#d4d4d4' : '#1a1a1a';
+
+                const clone = origEl.cloneNode(true);
+
+                // Hide .katex-mathml — without KaTeX CSS it would render as visible text
+                clone.querySelectorAll('.katex-mathml').forEach(function(el) {
+                    el.style.cssText = 'display:none;position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(1px,1px,1px,1px);';
+                });
+
+                // Inline computed styles so positioning/sizing survives the SVG context.
+                // Exclude 'color' — let it inherit from the wrapper div (which has textColor).
+                // Inlining color would override wrapper's theme-based color with chat's dark color.
+                const importantProps = [
+                    'font-size', 'font-family', 'font-style', 'font-weight',
+                    'display', 'position', 'top', 'left', 'bottom', 'right',
+                    'width', 'height', 'min-width', 'min-height',
+                    'margin-top', 'margin-bottom', 'margin-left', 'margin-right',
+                    'padding-top', 'padding-bottom', 'padding-left', 'padding-right',
+                    'vertical-align', 'text-align', 'line-height', 'overflow', 'white-space'
+                ];
+                const origEls = [origEl, ...origEl.querySelectorAll('*')];
+                const cloneEls = [clone, ...clone.querySelectorAll('*')];
+                for (let i = 0; i < origEls.length && i < cloneEls.length; i++) {
+                    try {
+                        const cs = window.getComputedStyle(origEls[i]);
+                        for (const p of importantProps) {
+                            const v = cs.getPropertyValue(p);
+                            if (v) cloneEls[i].style.setProperty(p, v);
+                        }
+                    } catch(e) {}
+                }
+
+                const svgStr = '<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + h + '">'
+                    + '<rect width="' + w + '" height="' + h + '" fill="' + bgColor + '"/>'
+                    + '<foreignObject width="' + w + '" height="' + h + '">'
+                    + '<div xmlns="http://www.w3.org/1999/xhtml" style="display:flex;justify-content:center;align-items:center;width:' + w + 'px;height:' + h + 'px;overflow:hidden;color:' + textColor + ';">'
+                    + clone.outerHTML
+                    + '</div></foreignObject></svg>';
+
+                const dataUri = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgStr)));
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = w * scale;
+                    canvas.height = h * scale;
+                    canvas.getContext('2d').drawImage(img, 0, 0, w * scale, h * scale);
+                    try { resolve(canvas.toDataURL('image/png')); } catch(e) { resolve(null); }
+                };
+                img.onerror = function() { resolve(null); };
+                img.src = dataUri;
+            } catch(e) { resolve(null); }
+        });
+    }
+
+    /**
+     * Async: capture rendered HTML from a chat bubble for PDF/DOCX export.
+     * - .katex-display: captured as PNG from canvas (supports all LaTeX environments)
+     * - inline .katex: replaced with data-latex-b64 placeholder (server renders as italic)
+     * - Mermaid SVGs: replaced with SVG data URI (server converts via cairosvg)
+     */
+    async function captureRenderedHtml(bubble, theme) {
+        try {
+            const mdContent = bubble.querySelector('.md-content');
+            if (!mdContent) return null;
+
+            // Step 1: Capture .katex-display elements as PNG before cloning
+            // (getBoundingClientRect needs the original DOM)
+            const origDisplayEls = Array.from(mdContent.querySelectorAll('.katex-display'));
+            const displayPngs = await Promise.all(
+                origDisplayEls.map(el => captureKatexDisplayAsPng(el, theme || 'dark'))
+            );
+
+            const clone = mdContent.cloneNode(true);
+            clone.querySelectorAll('.copy-code-btn, .mermaid-fullscreen-btn').forEach(el => el.remove());
+
+            // Step 2: Replace .katex-display in clone with captured PNGs
+            const cloneDisplayEls = clone.querySelectorAll('.katex-display');
+            cloneDisplayEls.forEach(function(el, i) {
+                const png = displayPngs[i];
+                const imgEl = document.createElement('img');
+                if (png) {
+                    imgEl.src = png;
+                } else {
+                    // Fallback: extract LaTeX and let server handle
+                    const ann = el.querySelector('annotation[encoding="application/x-tex"]');
+                    const latex = ann ? ann.textContent.trim() : '';
+                    imgEl.className = 'latex-png';
+                    imgEl.setAttribute('data-latex-b64', btoa(unescape(encodeURIComponent(latex))));
+                    imgEl.setAttribute('data-display', '1');
+                    imgEl.src = 'data:,';
+                }
+                imgEl.style.cssText = 'max-width:100%;height:auto;display:block;margin:8px auto;';
+                if (el.parentNode) el.parentNode.replaceChild(imgEl, el);
+            });
+
+            // Step 3: Replace remaining inline .katex elements (not already replaced)
+            clone.querySelectorAll('.katex').forEach(function(el) {
+                const annotation = el.querySelector('annotation[encoding="application/x-tex"]');
+                const latex = annotation
+                    ? annotation.textContent.trim()
+                    : (el.querySelector('.katex-html')?.textContent?.trim() || el.textContent.trim());
+                if (!latex) return;
+                const b64 = btoa(unescape(encodeURIComponent(latex)));
+                const img = document.createElement('img');
+                img.className = 'latex-png';
+                img.setAttribute('data-latex-b64', b64);
+                img.setAttribute('data-display', '0');
+                img.src = 'data:,';
+                img.style.cssText = 'display:inline;vertical-align:middle;';
+                if (el.parentNode) el.parentNode.replaceChild(img, el);
+            });
+
+            // Step 4: Replace Mermaid SVGs with SVG data URIs (server converts via cairosvg)
+            const origSvgs = mdContent.querySelectorAll('svg');
+            const cloneSvgs = clone.querySelectorAll('svg');
+            for (let i = 0; i < origSvgs.length; i++) {
+                const dataUri = svgElementToDataUri(origSvgs[i]);
+                if (dataUri && cloneSvgs[i] && cloneSvgs[i].parentNode) {
+                    const img = document.createElement('img');
+                    img.src = dataUri;
+                    img.style.cssText = 'max-width:100%;display:block;margin:8px 0;';
+                    cloneSvgs[i].parentNode.replaceChild(img, cloneSvgs[i]);
+                }
+            }
+
+            return clone.innerHTML;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // Export modal: Do Export button
+    document.getElementById('do-export-btn')?.addEventListener('click', async function() {
+        const format = document.querySelector('input[name="export_format"]:checked')?.value || 'pdf';
+        const theme = document.querySelector('input[name="export_theme"]:checked')?.value || 'dark';
+        const doExportBtn = this;
+
+        let messages = [];
+        let downloadName = 'chat_export';
+
+        doExportBtn.disabled = true;
+        doExportBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Generating...';
+
+        // Check if exporting a knowledge document (set by viewer modal)
+        if (window._knowledgeExportMode) {
+            const kd = window._knowledgeExportMode;
+            messages = [{ role: 'agent', text: kd.content, timestamp: kd.uploaded_at || '' }];
+            downloadName = 'knowledge_export';
+            window._knowledgeExportMode = null;
+        } else {
+            // Collect selected chat messages in DOM order with rendered HTML (async — canvas capture)
+            const allBubbles = document.querySelectorAll('#chat-history .chat-bubble[data-raw-text]');
+            const selectedBubbles = Array.from(allBubbles).filter(b => chatExportSelectedMessages.has(b));
+            for (const bubble of selectedBubbles) {
+                const role = bubble.classList.contains('user') ? 'user' : 'agent';
+                const text = bubble.getAttribute('data-raw-text');
+                const tsDiv = bubble.querySelector('.chat-timestamp');
+                const timestamp = tsDiv ? tsDiv.textContent.trim() : '';
+                const rendered_html = await captureRenderedHtml(bubble, theme);
+                messages.push({ role, text, timestamp, rendered_html });
+            }
+        }
+
+        if (messages.length === 0) {
+            doExportBtn.disabled = false;
+            doExportBtn.innerHTML = '<i class="fa-solid fa-file-export"></i> Export';
+            return;
+        }
+
+        fetch('/export_chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages, format, theme })
+        })
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(data => { throw new Error(data.message || 'Export failed'); });
+            }
+            return response.blob();
+        })
+        .then(blob => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${downloadName}.${format === 'pdf' ? 'pdf' : 'docx'}`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            closeModal('chat-export');
+        })
+        .catch(err => {
+            alert('Export failed: ' + err.message);
+        })
+        .finally(() => {
+            doExportBtn.disabled = false;
+            doExportBtn.innerHTML = '<i class="fa-solid fa-download"></i> Export';
+        });
     });
 
     // --- 6. Action Plan Status & Modal ---
@@ -1466,18 +2747,48 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // NEW: Handle Auto-Accept Checkbox State
     const autoAcceptCheckbox = document.getElementById('auto-accept-tasks-checkbox');
+    const autoSwitchCheckboxHeader = document.getElementById('auto-switch-checkbox');
 
-    // Load saved state
-    if (sessionStorage.getItem('autoAcceptTasks') === 'true') {
-        autoAcceptCheckbox.checked = true;
+    function emitAutoFlags() {
+        socket.emit('set_auto_flags', {
+            auto_accept_tasks: autoAcceptCheckbox ? autoAcceptCheckbox.checked : false,
+            auto_switch: autoSwitchCheckboxHeader ? autoSwitchCheckboxHeader.checked : false
+        });
     }
 
-    // Save state on change
-    autoAcceptCheckbox.addEventListener('change', (e) => {
-        sessionStorage.setItem('autoAcceptTasks', e.target.checked);
+    // Server is authoritative — restore checkboxes from server state on connect/reconnect
+    socket.on('auto_flags_state', (data) => {
+        if (autoAcceptCheckbox) {
+            autoAcceptCheckbox.checked = !!data.auto_accept_tasks;
+            syncIconBtn(autoAcceptCheckbox);
+            sessionStorage.setItem('autoAcceptTasks', autoAcceptCheckbox.checked);
+        }
+        if (autoSwitchCheckboxHeader) {
+            autoSwitchCheckboxHeader.checked = !!data.auto_switch;
+            syncIconBtn(autoSwitchCheckboxHeader);
+            sessionStorage.setItem('autoSwitch', autoSwitchCheckboxHeader.checked);
+        }
     });
 
+    // Send to server only when user manually changes a checkbox
+    autoAcceptCheckbox.addEventListener('change', (e) => {
+        sessionStorage.setItem('autoAcceptTasks', e.target.checked);
+        emitAutoFlags();
+    });
+    if (autoSwitchCheckboxHeader) {
+        autoSwitchCheckboxHeader.addEventListener('change', (e) => {
+            sessionStorage.setItem('autoSwitch', e.target.checked);
+            emitAutoFlags();
+        });
+    }
+
     socket.on('chat_task_proposal', (data) => {
+        if (window.apiSessionActive) return; // Handled by API client, not WebUI
+        console.log('[CHAT] Task proposal received:', data.objective);
+
+        // Store proposal for retry
+        let pendingProposal = data.objective;
+
         // Define the acceptance logic as a reusable function
         const executeProposal = () => {
              // 1. Save State to Session Storage (Persistent)
@@ -1495,7 +2806,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // 4. Set objective
             const objectiveTextarea = document.getElementById('objective-textarea');
             if (objectiveTextarea) {
-                objectiveTextarea.value = data.objective;
+                objectiveTextarea.value = pendingProposal;
                 objectiveTextarea.dispatchEvent(new Event('input'));
             }
 
@@ -1509,25 +2820,67 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // CHECK AUTO-ACCEPT STATUS
         if (autoAcceptCheckbox.checked) {
+            // Check if a task is already running
+            if (isTaskRunning) {
+                console.log('[CHAT] Cannot auto-execute: task already running.');
+                addChatMessage('assistant', `System: Execution Module is busy, a task is already in progress.\nNext proposed objective: ${data.objective}`);
+                return;
+            }
             // Auto-accept logic
             addChatMessage('assistant', `[Auto-Accepting Task: "${data.objective}"]`);
             executeProposal();
         } else {
-            // Manual logic (Show UI)
-            taskProposalArea.style.display = 'block';
-            proposalText.textContent = data.objective;
+            // Manual logic: Show inline chat proposal with Accept/Reject buttons
+            const proposalDiv = document.createElement('div');
+            proposalDiv.className = 'chat-bubble agent';
+            proposalDiv.style.cssText = 'border: 2px solid #f39c12; background: #2d2d30;';
+            const isMd = document.getElementById('markdown-toggle-checkbox').checked;
+            const renderedObjective = isMd ? renderMessageContent(data.objective, true) : data.objective.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            proposalDiv.innerHTML = `
+                <div class="chat-timestamp" style="color: #f39c12;">Task Proposal</div>
+                <strong style="color: #f39c12;">Agent proposes a new task:</strong>
+                <div style="margin: 8px 0; color: #e0e0e0; font-size: 0.95em;">${renderedObjective}</div>
+                <div style="display: flex; gap: 10px; margin-top: 8px;">
+                    <button class="chat-proposal-accept" style="background-color: #4CAF50; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px;">Accept & Execute</button>
+                    <button class="chat-proposal-reject" style="background-color: #c0392b; color: white; border: none; padding: 6px 16px; border-radius: 4px; cursor: pointer; font-size: 13px;">Decline</button>
+                </div>`;
+            chatHistory.appendChild(proposalDiv);
 
-            acceptProposalBtn.onclick = () => {
-                executeProposal();
-                // Hide proposal UI
-                taskProposalArea.style.display = 'none';
-                addChatMessage('assistant', `[Task "${data.objective}" initiated.]`);
+            // Run mermaid if Markdown is enabled
+            if (isMd && typeof mermaid !== 'undefined') {
+                runMermaidSafe();
+            }
+
+            // Run KaTeX if Markdown is enabled
+            if (isMd) {
+                renderMathInChat(proposalDiv);
+            }
+
+            // Wire up inline buttons
+            const inlineAccept = proposalDiv.querySelector('.chat-proposal-accept');
+            const inlineReject = proposalDiv.querySelector('.chat-proposal-reject');
+
+            const disableButtons = () => {
+                inlineAccept.disabled = true;
+                inlineReject.disabled = true;
+                inlineAccept.style.opacity = '0.5';
+                inlineReject.style.opacity = '0.5';
             };
 
-            rejectProposalBtn.onclick = () => {
-                taskProposalArea.style.display = 'none';
+            inlineAccept.onclick = () => {
+                disableButtons();
+                addChatMessage('assistant', `[Task accepted: "${data.objective.substring(0, 100)}..."]`);
+                executeProposal();
+            };
+            inlineReject.onclick = () => {
+                disableButtons();
                 addChatMessage('user', '[Task proposal declined]');
             };
+
+            // Auto-scroll to show the proposal
+            setTimeout(() => {
+                chatHistoryContainer.scrollTop = chatHistoryContainer.scrollHeight;
+            }, 100);
         }
     });
 
@@ -1555,6 +2908,17 @@ document.addEventListener('DOMContentLoaded', () => {
             display: flex; flex-direction: column;
         }
         .fullscreen-log-mode #log-textarea { flex-grow: 1; height: 100% !important; }
+
+        /* --- OBJECTIVE FULLSCREEN --- */
+        .fullscreen-objective-mode { overflow: hidden; }
+        .fullscreen-objective-mode #view-execution {
+            position: fixed !important; top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 9999; background-color: #121212; padding: 20px; box-sizing: border-box;
+            display: flex; flex-direction: column;
+        }
+        .fullscreen-objective-mode #objective-textarea {
+            flex-grow: 1; height: 100% !important;
+        }
 
         /* --- SCREEN FULLSCREEN (FIXED) --- */
         .fullscreen-screen-mode { overflow: hidden; }
@@ -1595,6 +2959,14 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.classList.toggle('fullscreen-screen-mode');
             // Trigger resize event for xterm.js if needed
             window.dispatchEvent(new Event('resize'));
+        });
+    }
+
+    // 3. Objective Fullscreen
+    const objectiveBtn = document.getElementById('objective-fullscreen-btn');
+    if(objectiveBtn) {
+        objectiveBtn.addEventListener('click', () => {
+            document.body.classList.toggle('fullscreen-objective-mode');
         });
     }
 
@@ -1941,6 +3313,99 @@ document.addEventListener('DOMContentLoaded', () => {
     updateViewButtons();
 
     // ========================================
+    // WEB SEARCH STATUS LISTENER
+    // ========================================
+    const webSearchIndicator = document.getElementById('web-search-indicator');
+
+    socket.on('web_search_status', (data) => {
+        // Update indicator in chat header
+        if (webSearchIndicator) {
+            if (data.status === 'idle' || data.status === 'done' || data.status === 'error') {
+                webSearchIndicator.style.display = 'none';
+            } else {
+                webSearchIndicator.style.display = 'inline';
+                const statusText = data.status === 'searching' ? 'Searching web...' :
+                                   data.status === 'evaluating' ? 'Evaluating results...' :
+                                   data.status === 'fetching' ? 'Fetching page...' :
+                                   data.status === 'processing' ? 'Processing content...' : 'Web search...';
+                webSearchIndicator.innerHTML = `<i class="fa-solid fa-globe fa-spin"></i> ${statusText}`;
+            }
+        }
+
+        // Update chip badge spinner
+        const wsBadge = document.getElementById('websearch-badge');
+        if (wsBadge) {
+            if (data.status === 'idle' || data.status === 'done' || data.status === 'error') {
+                wsBadge.style.display = 'none';
+            } else {
+                wsBadge.style.display = '';
+            }
+        }
+
+        // Update status modal if open
+        const statusDot = document.getElementById('ws-status-dot');
+        const statusLabel = document.getElementById('ws-status-label');
+        const querySection = document.getElementById('ws-status-query-section');
+        const queryEl = document.getElementById('ws-status-query');
+        const reasonEl = document.getElementById('ws-status-reason');
+        const stepCounter = document.getElementById('ws-status-step-counter');
+        const logTextarea = document.getElementById('ws-status-log');
+
+        if (statusDot) {
+            const colorMap = {
+                'idle': '#666', 'searching': '#3498db', 'evaluating': '#e67e22',
+                'fetching': '#9b59b6', 'processing': '#27ae60', 'done': '#4CAF50', 'error': '#FF5733'
+            };
+            statusDot.style.background = colorMap[data.status] || '#666';
+            statusLabel.textContent = (data.status || 'IDLE').toUpperCase();
+            statusLabel.style.color = colorMap[data.status] || '#aaa';
+        }
+
+        if (data.query && querySection) {
+            querySection.style.display = 'block';
+            queryEl.textContent = data.query;
+            reasonEl.textContent = data.reason || '';
+        }
+
+        // Update step indicators
+        if (data.step_statuses) {
+            const completed = data.step_statuses.filter(s => s === 'done').length;
+            if (stepCounter) stepCounter.textContent = `${completed}/${data.total_steps || 5}`;
+
+            const steps = document.querySelectorAll('.ws-step');
+            steps.forEach((stepEl, i) => {
+                const icon = stepEl.querySelector('.ws-step-icon');
+                const label = stepEl.querySelector('span:last-child');
+                const status = data.step_statuses[i] || 'pending';
+
+                if (status === 'done') {
+                    icon.innerHTML = '&#10003;';
+                    icon.style.color = '#4CAF50';
+                    label.style.color = '#4CAF50';
+                } else if (status === 'active') {
+                    icon.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin" style="font-size: 12px;"></i>';
+                    icon.style.color = '#3498db';
+                    label.style.color = '#3498db';
+                } else if (status === 'skipped') {
+                    icon.innerHTML = '&#8212;';
+                    icon.style.color = '#888';
+                    label.style.color = '#888';
+                } else {
+                    icon.innerHTML = '&#9675;';
+                    icon.style.color = '#666';
+                    label.style.color = '#888';
+                }
+            });
+        }
+
+        // Update log
+        if (logTextarea && data.log_lines) {
+            logTextarea.value = data.log_lines.join('\n');
+            logTextarea.scrollTop = logTextarea.scrollHeight;
+        }
+    });
+
+    // ========================================
     // MEMORY LEAK PREVENTION - CLEANUP ON PAGE UNLOAD
     // ========================================
     window.addEventListener('beforeunload', () => {
@@ -1977,6 +3442,7 @@ document.addEventListener('DOMContentLoaded', () => {
             socket.off('action_plan_cleared');
             socket.off('chat_task_proposal');
             socket.off('update_raw_llm_responses');
+            socket.off('web_search_status');
         }
 
         // 3. Clear large data structures
