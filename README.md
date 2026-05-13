@@ -74,22 +74,118 @@ git clone https://github.com/Balaurentiu/AI-SSH-Controller.git
 cd AI-SSH-Controller
 ```
 
-2. Prepare configuration:
+2. Prepare the keys directory and configuration:
 ```bash
 mkdir -p keys
 cp config.ini keys/config.ini
 ```
 
-3. Build and run with Docker:
+3. Build the Docker image:
 ```bash
 docker build -t agent-controller .
+```
 
+4. Start the container:
+```bash
 docker run -d --name agent-app -p 5000:5000 \
   -v $(pwd)/keys:/app/keys \
   agent-controller
 ```
 
-4. Access the web interface at `http://localhost:5000`
+5. Access the web interface at `http://localhost:5000`
+
+---
+
+## Docker Reference
+
+### Build
+
+```bash
+docker build -t agent-controller .
+```
+
+Force a clean rebuild (no cache):
+```bash
+docker build --no-cache -t agent-controller .
+```
+
+### Start
+
+```bash
+docker run -d --name agent-app -p 5000:5000 \
+  -v $(pwd)/keys:/app/keys \
+  agent-controller
+```
+
+- `-d` — run in background
+- `--name agent-app` — container name for easy reference
+- `-p 5000:5000` — expose web interface on port 5000
+- `-v $(pwd)/keys:/app/keys` — persist all settings, logs, keys, and knowledge data
+
+To expose on a specific host interface only (e.g. localhost):
+```bash
+docker run -d --name agent-app -p 127.0.0.1:5000:5000 \
+  -v $(pwd)/keys:/app/keys \
+  agent-controller
+```
+
+### Stop
+
+```bash
+docker stop agent-app
+```
+
+### Restart
+
+```bash
+docker restart agent-app
+```
+
+### Remove container (keeps image and keys/)
+
+```bash
+docker stop agent-app
+docker rm agent-app
+```
+
+### Rebuild and redeploy
+
+```bash
+docker stop agent-app
+docker rm agent-app
+docker build -t agent-controller .
+docker run -d --name agent-app -p 5000:5000 \
+  -v $(pwd)/keys:/app/keys \
+  agent-controller
+```
+
+All settings, prompts, logs, and knowledge documents are stored in `keys/` and survive rebuilds.
+
+### Logs
+
+View live container logs:
+```bash
+docker logs agent-app -f
+```
+
+Last 100 lines:
+```bash
+docker logs agent-app --tail 100
+```
+
+### Container shell (for debugging)
+
+```bash
+docker exec -it agent-app bash
+```
+
+### Status
+
+```bash
+docker ps -a --filter name=agent-app
+```
+
+---
 
 ### Pre-Built Prompts (Optional)
 
@@ -227,10 +323,6 @@ All prompts are customizable via the **Prompt Editor** in the web interface. Ava
 - Monitor agent activity closely
 - Never share your `keys/config.ini` or API keys
 - Be cautious with Auto-Accept and Auto-Switch in production environments
-
-## Documentation
-
-See [CLAUDE.md](CLAUDE.md) for comprehensive technical documentation including architecture details, key patterns, debugging guide, and recent change log.
 
 ## License
 
