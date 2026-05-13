@@ -4,60 +4,59 @@ AI-powered autonomous agent for executing commands on remote systems via SSH. Th
 
 ## Features
 
-- **Dual LLM Configuration**: Configure separate models for Chat and Execution
-  - **Chat LLM**: Optimized for conversational interactions
-  - **Execution LLM**: Specialized for command generation and task execution
-  - Independent provider selection (Ollama, Gemini, or Anthropic)
-  - Model selection per LLM with live model fetching
-- **Multiple LLM Support**: Works with Ollama (local), Google Gemini, or Anthropic Claude
-- **Autonomous Execution**: Agent independently generates and executes commands
-- **Execution Modes**:
-  - **Independent**: Agent validates commands automatically via LLM
-  - **Assisted**: User approval required for each command
+- **Multi-LLM Architecture**: Separate configurable models for Execution, Chat, Validation, and Web Search
+  - Independent provider selection per role (Ollama, Gemini, Anthropic)
+  - Fallback LLM chains — automatic switch on timeout or connection error
+  - Live model fetching per provider
+- **Multiple LLM Providers**: Ollama (local), Google Gemini, Anthropic Claude
+- **Autonomous Execution**: Agent independently generates, validates, and executes commands
+- **Execution Modes**: Independent (auto-validate) or Assisted (manual approval per command)
+- **Report Validator**: Separate LLM audits the agent's final REPORT against actual execution history to catch hallucinations
+- **Knowledge Management**: Upload documents (PDF, DOCX, TXT, images via OCR) — agent retrieves relevant context via vector search
+- **Autonomous Web Search**: Agent triggers DuckDuckGo research pipeline with dedicated LLM, attaches findings to knowledge store
+- **Chat Export**: Export chat conversations and knowledge documents as PDF or DOCX (dark/light themes)
+- **REST API**: 6 async endpoints for headless/programmatic control
+- **Network Device Support**: Cisco, NX-OS, IOS-XR, IOS-XE, Brocade, Juniper, Arista via interactive Block Execution mode
+- **Legacy SSH Support**: Automatic fallback to legacy ciphers/KEX/host keys for older devices
+- **Multiple Auth Methods**: SSH key, password, or key-with-password-fallback
+- **Multi-System Orchestration**: Switch between saved connections with guarded approval flow
+- **Connections Import/Export**: Save and load connection lists as JSON
+- **Abort Command**: Kill a running command mid-execution and pause the task without stopping it
+- **Telegram Bot**: Optional Telegram interface for remote control
 - **Advanced Capabilities**:
-  - **SRCH**: Search past execution history
-  - **WRITE_FILE**: Create files on remote systems
-  - **ASK**: Request human input when needed
-  - **Dynamic Timeout**: Adjust command timeouts per step
-- **Interactive Chat Interface**:
-  - Chat with the agent about executed tasks
-  - Request new tasks via natural language
-  - Auto-accept tasks or manual approval
-  - Action plans with multi-step workflows
-  - Search execution history from chat
-  - Draggable resizer for input area
-  - Auto-scroll to latest messages
-- **Modern Web Interface**:
-  - Real-time execution monitoring
-  - Fullscreen modes for Log, Screen, and Chat
-  - Dedicated status bar for command execution
-  - Modal configuration dialogs
-  - Tabbed navigation (Execution / Chat)
-  - Uniform config chip design with dual-model display
-- **Prompt Management**:
-  - **Import/Export**: Backup and restore all prompts as ZIP archive
-  - Individual text files for each prompt category
-  - Share prompt configurations across instances
-  - Quick restore to known-good prompts
-- **Persistent Memory**: Agent maintains context across sessions
+  - `SRCH:` — Search full execution history
+  - `WRITE_FILE:` — Create files on remote system
+  - `KNOWLEDGE:` — Vector search over uploaded documents
+  - `WEB_SEARCH:` — Trigger autonomous web research
+  - `ASK:` — Request human input
+  - `TIMEOUT:` — Adjust per-step command timeout
+  - `BLOCK:` / `CONFIG:` — Interactive shell sessions for network devices
+- **Interactive Chat Interface**: Chat with the agent, request tasks, create action plans, switch systems
+- **Persistent Memory**: Full log + summarized LLM context, survives container restarts
 - **History Summarization**: Automatic context compression when threshold exceeded
 
 ## Architecture
 
 ### Core Components
 
-- **app.py**: Flask web application with SocketIO for real-time communication
-- **agent_core.py**: Main agent execution loop and LLM interaction
-- **log_manager.py**: Unified logging architecture with dual-memory system
-- **ssh_utils.py**: SSH command execution with Windows/Linux compatibility
-- **config.py**: Configuration management and persistent paths
-- **session_manager.py**: State persistence and session handling
-- **llm_utils.py**: LLM API integration (Ollama/Gemini/Anthropic)
+| File | Purpose |
+|------|---------|
+| `app.py` | Flask + SocketIO, routes, REST API, global state |
+| `agent_core.py` | Agent loop, LLM interaction, action parsing |
+| `ssh_utils.py` | SSH via paramiko, PTY, legacy algorithms, block execution |
+| `log_manager.py` | Dual logging (full log + LLM context), summarization |
+| `config.py` | Configuration management and section backfill |
+| `session_manager.py` | State persistence and ZIP backup/restore |
+| `llm_utils.py` | LLM API calls (Ollama/Gemini/Anthropic) |
+| `knowledge_manager.py` | Document upload, embedding, vector search (ChromaDB/FAISS) |
+| `web_search_module.py` | Autonomous web research pipeline with dedicated LLM |
+| `chat_export.py` | Chat/knowledge export to PDF and DOCX |
+| `telegram_bot.py` | Optional Telegram bot interface |
 
 ### Dual-Memory System
 
 1. **Full Log** (`execution_log.txt`): Immutable append-only record of all activity
-2. **LLM Context** (`execution_log_llm_context.txt`): Agent's working memory (subject to summarization)
+2. **LLM Context** (`execution_log_llm_context.txt`): Agent's working memory (summarized when threshold exceeded)
 
 ## Quick Start
 
@@ -75,16 +74,11 @@ git clone https://github.com/Balaurentiu/AI-SSH-Controller.git
 cd AI-SSH-Controller
 ```
 
-2. Create the keys directory and prepare configuration:
+2. Prepare configuration:
 ```bash
 mkdir -p keys
-touch session.json
-
-# Copy the template configuration file
-cp keys/config.ini.new keys/config.ini
+cp config.ini keys/config.ini
 ```
-
-**Important:** The `keys/config.ini.new` is a template file. After cloning the repository, copy it to `keys/config.ini` before running the application. This file will be automatically populated with your settings through the web interface.
 
 3. Build and run with Docker:
 ```bash
@@ -92,7 +86,6 @@ docker build -t agent-controller .
 
 docker run -d --name agent-app -p 5000:5000 \
   -v $(pwd)/keys:/app/keys \
-  -v $(pwd)/session.json:/app/session.json \
   agent-controller
 ```
 
@@ -100,448 +93,149 @@ docker run -d --name agent-app -p 5000:5000 \
 
 ### Pre-Built Prompts (Optional)
 
-The repository includes a **GOOD_PROMPTS/** directory containing production-tested, optimized prompt templates for all prompt categories:
+The `GOOD_PROMPTS/` directory contains production-tested prompt templates. Import them via the web interface:
 
-**Execution Prompts:**
-- ✅ **OllamaPrompt.txt** - Standard task execution for Ollama models
-- ✅ **CloudPrompt.txt** - Standard task execution for Gemini/Anthropic
-- ✅ **OllamaPromptWithAsk.txt** - Execution with human interaction (Ollama)
-- ✅ **CloudPromptWithAsk.txt** - Execution with human interaction (Cloud)
-
-**Chat Interface:**
-- ✅ **ChatPrompt.txt** - Conversational chat interface prompt with action plan support
-
-**Validation:**
-- ✅ **OllamaValidatePrompt.txt** - Command safety validation (Ollama)
-- ✅ **CloudValidatePrompt.txt** - Command safety validation (Cloud)
-
-**Summarization:**
-- ✅ **OllamaSummarizePrompt.txt** - History compression (Ollama)
-- ✅ **CloudSummarizePrompt.txt** - History compression (Cloud)
-- ✅ **OllamaStepSummaryPrompt.txt** - Large output summarization (Ollama)
-- ✅ **CloudStepSummaryPrompt.txt** - Large output summarization (Cloud)
-- ✅ **OllamaSearchSummaryPrompt.txt** - Search results analysis (Ollama)
-- ✅ **CloudSearchSummaryPrompt.txt** - Search results analysis (Cloud)
-
-**Complete Archive:**
-- 📦 **prompts_export_YYYYMMDD_HHMMSS.zip** - All prompts in one ZIP file
-
-These prompts have been thoroughly tested and embody best practices for:
-- Methodical system administration
-- Safe command execution
-- Efficient debugging
-- Clear failure reporting
-- Natural conversational flow
-- Action plan management
-
-**To use these prompts (Option 1 - Import All at Once):**
-1. Open the web interface at `http://localhost:5000`
-2. Click the **"Prompts I/E"** card in the settings bar
-3. Click **"Export All Prompts"** to backup your current prompts (recommended)
-4. In the Import section, select the `prompts_export_*.zip` file from `GOOD_PROMPTS/`
-5. Click **"Import Prompts from ZIP"**
-6. All 13 prompts will be imported automatically
-
-**To use these prompts (Option 2 - Manual Individual Import):**
-1. Open the web interface at `http://localhost:5000`
-2. Click the **Prompt Editor** card in the settings bar
-3. Copy the content from the desired `.txt` file in `GOOD_PROMPTS/`
-4. Paste into the appropriate prompt field (Ollama or Cloud)
-5. Click **Save Templates**
-6. Repeat for other prompt categories using their dedicated modals
-
-**Note:** These are optional. The application will work with default prompts, but these pre-built templates provide enhanced performance and better agent behavior.
+1. Click **Prompts I/E** in the settings bar
+2. Select the `prompts_export_*.zip` file from `GOOD_PROMPTS/`
+3. Click **Import Prompts from ZIP**
 
 ## Configuration
 
-All configuration is done through the **web interface** - no need to manually edit files!
+All configuration is done through the **web interface**.
 
-### First-Time Setup
+### Agent & LLM Configuration
 
-1. Open `http://localhost:5000` in your browser
-2. You'll see a **settings bar** below the navigation with configuration cards
-3. Configure each section by clicking on the cards:
+- **Execution LLM**: Provider, model, API key/URL for task execution
+- **Chat LLM**: Separate model for conversational chat (optional)
+- **Validator LLM**: Stronger model for report auditing (optional, recommended)
+- **Fallback LLMs**: Automatic fallback chain per role on failure
+- Advanced: max steps, timeouts, summarization threshold, num_ctx, temperature
 
-   **Agent & LLM Configuration** (click the card):
-   - **Execution LLM**: Configure the model for task execution
-     - Select LLM Provider (Ollama, Gemini, or Anthropic)
-     - Enter API Key (for Gemini/Anthropic)
-     - Click **Fetch Models** to load available models from your provider
-     - Choose model from dropdown (e.g., `llama3:latest`, `gemini-pro`, `claude-3-5-sonnet-20241022`)
-   - **Chat LLM** (Optional): Configure a separate model for chat interactions
-     - Enable separate Chat LLM or use same as Execution
-     - Select provider and model independently
-     - Optimized models: `gpt-oss-optimizat-24k:latest` for local Ollama
-   - Set max steps, timeouts, and summarization threshold
-   - Click **Save Agent Config** to apply
-   - The status bar displays both models: **Exec:** provider (model) | **Chat:** provider (model)
+### Remote System Connection
 
-   **Remote System Connection** (click the card):
-   - Enter target system IP address
-   - Enter SSH username
-   - Set SSH port (default: 22)
-   - Configure SSH key path ... enter the password for automatic deploy and press Deploy
-   - Click **Save & Test Connection** to apply and verify connectivity
+- IP, username, SSH port, auth method (key / password / key_or_password)
+- SSH key auto-generation and deployment
+- Device type (linux, windows, cisco, nxos, iosxr, iosxe, brocade, juniper, arista)
+- Enable password for Cisco privileged mode
 
-   **Prompts I/E** (Import/Export - click the card):
-   - **Export**: Download all current prompts as a timestamped ZIP archive
-     - Contains 13 individual .txt files (one per prompt category)
-     - Useful for backup, version control, or sharing configurations
-   - **Import**: Upload a ZIP archive to restore prompts
-     - Validates file format and updates all prompts automatically
-     - Shows success message with count of imported prompts
-     - Great for restoring from GOOD_PROMPTS or previous backups
+### Knowledge Management
 
+Enable from the **Knowledge & Embeddings** section:
+- Embedding provider (Ollama `nomic-embed-text` or Gemini)
+- Vector store (ChromaDB persistent or FAISS)
+- Upload documents via the Knowledge panel (PDF, DOCX, TXT, MD, CSV, images)
+- Agent uses `KNOWLEDGE: <query>` to retrieve relevant content via similarity search
 
-### SSH Key Setup
+### Web Search
 
-The application handles SSH key generation and deployment automatically:
+Configure from the **Web Search** nav link:
+- Dedicated LLM for search pipeline (provider, model, temperature, context size)
+- Fallback models for web search LLM
+- Search engine (DuckDuckGo), max results, max pages to fetch, region, safe search
+- Content settings: max page size, brief threshold (content below threshold injected directly into chat; larger content attached to knowledge store)
+- Customizable prompt template with `{reason}` and `{query}` variables
 
-1. Click on the **"Remote System Connection"** card in the settings bar
-2. Enter your target system credentials (IP, username, password)
-3. Click the **"Deploy SSH Key"** button
-4. The application will:
-   - Generate an SSH key pair if it doesn't exist
-   - Automatically deploy the public key to your target system
-   - Configure passwordless SSH access
+Agent triggers web search from chat using:
+```
+REASON: [why the search is needed]
+WEB_SEARCH: [search query]
+```
 
-**That's it!** No manual copying or editing of `authorized_keys` files needed.
+### REST API
 
-**Note:** Configuration is automatically saved to `keys/config.ini` for persistence across container restarts.
+6 async endpoints for headless operation:
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/execute_ssh` | POST | Start async task (with optional `system_name`) |
+| `/api/task_status/<id>` | GET | Poll task status |
+| `/api/status` | GET | Health check |
+| `/api/stop` | POST | Stop running task |
+| `/api/list_systems` | GET | List saved systems |
+| `/api/switch_system` | POST | Switch target system |
+
+Example:
+```bash
+curl -X POST http://localhost:5000/api/execute_ssh \
+  -H "Content-Type: application/json" \
+  -d '{"objective": "Check disk usage and report findings", "max_steps": 10}'
+```
 
 ## Usage
 
-### Execution Tab (Direct Task Execution)
+### Execution Tab
 
-1. **Start a Task**:
-   - Open the web interface (Execution tab)
-   - Enter your objective (e.g., "Install nginx and configure it to serve a static website")
-   - Choose execution mode (Independent/Assisted)
-   - Enable "Allow Agent to ASK" if you want the agent to request clarification
-   - Click "Execute Task"
+1. Enter your objective
+2. Choose mode (Independent / Assisted) and optional settings (ASK, validator, timeout)
+3. Click **Execute Task**
+4. Monitor live log and remote screen output
+5. Use **Abort Cmd** to kill a running command without stopping the task
 
-2. **Monitor Execution**:
-   - View real-time logs in the "Agent Execution Log (Live)" panel
-   - See command outputs in the "Remote System Screen (Live)" panel
-   - Track agent's reasoning and decisions
-   - Watch the dedicated status bar below the log for current activity
+### Chat Tab
 
-3. **Interact**:
-   - Pause/Resume execution
-   - Approve commands in Assisted mode
-   - Answer agent questions (if ASK mode enabled)
-   - Adjust command timeout on the fly
-   - Use fullscreen mode (⛶ button) for focused views
+- Chat with the agent about past executions or request new tasks
+- Agent proposes tasks via `<<REQUEST_TASK: ...>>` — approve or auto-accept
+- Create multi-step action plans: `<<ACTION_PLAN_START>>..<<ACTION_PLAN_STOP>>`
+- Switch target systems via `<<SWITCH_SYSTEM: name>>` with optional approval flow
+- Export chat history as PDF or DOCX (right-click messages for selection)
 
-### Chat Tab (Conversational Interface)
+### Network Devices
 
-1. **Chat with the Agent**:
-   - Switch to the "Assistant Chat" tab
-   - Ask questions about past executions
-   - Request information from execution history
-   - Discuss system status and configurations
+For Cisco, Juniper, Arista etc., set `device_type` in system config. The agent uses `BLOCK:` or `CONFIG:` prefixed commands to maintain interactive shell sessions — preserving `conf t` context across steps.
 
-2. **Request Tasks via Chat**:
-   - Describe what you want to accomplish in natural language
-   - Agent proposes a task with `<<REQUEST_TASK: objective>>`
-   - Approve or reject the proposed task
-   - Or enable "Auto-Accept Tasks" for automatic execution
+### Multi-System Orchestration
 
-3. **Action Plans**:
-   - Agent can create multi-step action plans: `<<ACTION_PLAN_START>>...<<ACTION_PLAN_STOP>>`
-   - View plan status in the chat toolbar (e.g., "AP: Step 2/5 in progress...")
-   - Click the status button to see full plan details
-   - Plans automatically track completed and pending steps
-   - Supports nested sub-plans (stack-based)
+Save multiple connections via the system config. The agent or user can switch between them:
+- **Guarded switch**: User approval required (modal confirmation)
+- **Auto-Switch**: Enable checkbox to skip confirmation
 
-4. **Search from Chat**:
-   - Agent uses `SRCH: <query>` to search execution history
-   - Retrieves full file contents logged in previous executions
-   - Summarizes search results before responding
+### Connections Import/Export
 
-### History & Reports Page
+- **Save List**: Download all saved connections as `connections.json`
+- **Load List**: Import connections from a JSON file
+
+### History & Reports
 
 - View and edit agent's working memory (LLM context)
-- Browse full execution log (immutable record)
-- Download complete session data as ZIP
-- Manually trigger history summarization
-- Search past executions
-
-## Advanced Features
-
-### SRCH (History Search)
-The agent can search its full execution history using `SRCH: <query>` to recall information from earlier steps, even after summarization.
-
-**Enhanced Search Capabilities:**
-- Retrieves complete file content blocks (marked with `--- FILE CONTENT WRITTEN TO ---`)
-- Returns up to 50 matches with context
-- Works from both task execution and chat interface
-- Automatically summarized by LLM when using cloud providers
-
-### WRITE_FILE
-The agent can create files on the remote system with custom content, useful for generating configuration files, scripts, or documents.
-
-**Format:**
-```
-WRITE_FILE: /path/to/file
-CONTENT:
-[file content here]
-END_CONTENT
-```
-
-File content is automatically logged to execution history for future SRCH operations.
-
-### Action Plans (Multi-Step Workflows)
-The agent can break down complex objectives into sequential steps:
-
-**Creating a Plan (from chat):**
-```
-<<ACTION_PLAN_START>>
-Title: Deploy Web Application
-Step 1. Install dependencies
-Step 2. Configure database
-Step 3. Deploy application
-Step 4. Start services
-<<ACTION_PLAN_STOP>>
-```
-
-**Features:**
-- Visual progress tracking in chat toolbar
-- Automatic step completion detection (fuzzy keyword matching)
-- Stack-based architecture supports nested sub-plans
-- Catch-up logic for out-of-order completions
-- Persistent across sessions
-
-### Dynamic Timeout Adjustment
-The agent can adjust command timeouts on a per-step basis for long-running operations using `TIMEOUT: <seconds>`.
-
-### Manual Memory Editing
-Edit the agent's working memory directly via the "History & Reports" page to guide its behavior. Click "Edit Agent Memory" to modify the LLM context.
-
-### Chat Interface Features
-
-**Auto-Accept Tasks:**
-Enable the "Auto-Accept Tasks" checkbox in the chat toolbar to automatically execute tasks proposed by the agent without manual confirmation.
-
-**Fullscreen Modes:**
-Each panel (Chat, Log, Screen) has a fullscreen toggle button (⛶) for focused viewing:
-- **Chat Fullscreen:** Immersive conversational interface
-- **Log Fullscreen:** Maximize execution log for detailed analysis
-- **Screen Fullscreen:** Full-viewport terminal output view
-
-**Status Bar:**
-Dedicated status bar below the execution log shows transient messages:
-- "Thinking... (30s remaining)"
-- "Executing command... (120s timeout)"
-- Doesn't clutter the main log output
+- Browse full immutable execution log
+- Download complete session as ZIP
+- Manually trigger summarization
 
 ## Prompt System
 
-The agent's behavior is guided by a comprehensive set of prompts that define how it analyzes tasks, generates commands, and handles various situations. All prompts are customizable through the web interface.
+All prompts are customizable via the **Prompt Editor** in the web interface. Available prompt types:
 
-### Available Prompt Types
-
-#### 1. **Standard Execution Prompt** (`CloudPrompt` / `OllamaPrompt`)
-The main prompt that guides the agent's decision-making process. It includes:
-
-**Core Strategy: Verify → Learn → Act**
-- Verify system information before acting
-- Learn command syntax with `--help` or `man` if uncertain
-- Execute only after verifying prerequisites
-- Handle timeouts and exit codes appropriately
-
-**Response Formats Available:**
-- `COMMAND:` - Execute a shell command
-- `WRITE_FILE:` - Create files on the remote system
-- `SRCH:` - Search execution history
-- `REPORT:` - Complete the task (Success/Failure)
-- `TIMEOUT:` - Adjust command timeout for current step
-
-**Key Features:**
-- Simplicity mandate (keep commands focused)
-- Loop detection (prevent infinite retries)
-- Summary awareness (respect summarized context)
-- Non-interactive terminal handling
-
-#### 2. **ASK-Enabled Prompt** (`CloudPromptWithAsk` / `OllamaPromptWithAsk`)
-Extended version that adds the `ASK:` capability for human interaction.
-
-**When Agent Can Ask:**
-- Critical actions (destructive operations, security implications)
-- Ambiguity/multiple choices requiring user guidance
-- Clarification needed for safe decision-making
-
-**Format:**
-```
-REASON: [Explanation]
-ASK: [Question for user]
-```
-
-#### 3. **History Summarization Prompt** (`CloudSummarizePrompt` / `OllamaSummarizePrompt`)
-Used when execution history exceeds the summarization threshold.
-
-**Preserves:**
-- Initial system discoveries (OS, hardware)
-- Major actions (software installed, files created)
-- Key errors and resolutions
-- HUMAN SEARCH/INTERVENTION findings
-- Last 2-3 command outputs
-
-**Variables:** `{objective}`, `{history}`
-
-#### 4. **Step Output Summarization Prompt** (`CloudStepSummaryPrompt` / `OllamaStepSummaryPrompt`)
-Triggered when a single command output is too large (flood protection).
-
-**Rules:**
-1. Preserve all error messages, warnings, exit codes
-2. Preserve last 5-10 lines exactly
-3. Keep key data points (IPs, paths, IDs)
-4. State clearly this is a summary
-
-**Variable:** `{output}`
-
-#### 5. **Search Results Summarization Prompt** (`CloudSearchSummaryPrompt` / `OllamaSearchSummaryPrompt`)
-Used when SRCH returns results from execution history.
-
-**Task:**
-- Synthesize findings relevant to the search reason
-- List specific data explicitly (IPs, paths, errors)
-- Ignore irrelevant logs
-- State clearly if nothing relevant found
-
-**Variables:** `{objective}`, `{reason}`, `{results}`
-
-#### 6. **Command Validator Prompt** (`CloudValidatePrompt` / `OllamaValidatePrompt`)
-Safety checker in Independent mode. Validates commands before execution.
-
-**Checks For:**
-- **Interactive blocking** - Commands requiring user input (nano, vi, apt without -y)
-- **Invalid format** - Syntax errors, OS incompatibility
-- **Timeout issues** - Commands likely exceeding configured timeout
-- **Destructive operations** - Potentially dangerous commands
-
-**Special Handling:**
-- Passwordless sudo support (when configured)
-- Piped password injection detection
-- OS-specific command validation
-
-**Response Format:** `APPROVE` or `REJECT\nREASON: [explanation]`
-
-**Variables:** `{system_info}`, `{sudo_available}`, `{command}`, `{reason}`, `{summarization_threshold}`, `{command_timeout}`
-
-### Customizing Prompts
-
-You can customize any prompt through the web interface:
-
-1. Click the **Prompt Editor** card in the settings bar
-2. Select the prompt type (Standard/Ask Mode)
-3. Edit prompts for Ollama or Cloud providers separately
-4. Click **Save Templates**
-
-For validator and summarization prompts, use their dedicated cards in the settings bar.
-
-### Prompt Variables
-
-Common variables available across prompts:
-- `{objective}` - Current task objective
-- `{history}` - Execution history or LLM context
-- `{system_info}` - Remote system information (OS, user, IP)
-- `{command}` - Command to validate
-- `{reason}` - Agent's reasoning
-- `{sudo_available}` - Whether passwordless sudo is configured
-- `{command_timeout}` - Maximum command execution time
-- `{summarization_threshold}` - Context size threshold
-- `{output}` - Command output to summarize
-- `{results}` - Search results to analyze
-- `{action_plan_status}` - Current action plan status (for chat prompts)
-- `{chat_history}` - Recent chat messages (configurable count)
-- `{user_message}` - Current user message (chat only)
-
-### Default Configuration
-
-The `keys/config.ini.new` template file includes comprehensive, production-ready prompts for all scenarios. These prompts embody best practices for:
-- Methodical system administration
-- Safe command execution
-- Efficient debugging
-- Clear failure reporting
-
-You can use these as-is or customize them to match your specific use cases.
-
-## User Interface Overview
-
-### Main Components
-
-**Navigation Bar:**
-- Execution / Chat / History & Reports tabs
-- Settings cards (Agent & LLM Config, Remote System, Prompts I/E, Prompt Editor, Summarization, Validator)
-- Dual-model display showing both Execution and Chat LLM configurations
-- Save/Load session buttons
-
-**Execution Tab:**
-- **Objective Input:** Enter task description
-- **Control Panel:** Execution mode, ASK toggle, validator toggle, command timeout
-- **Execution Buttons:** Execute, Stop, Pause
-- **Agent Execution Log:** Real-time agent activity with view modes (Actions/Commands)
-- **Execution Status Bar:** Shows "Thinking..." and "Executing command..." states
-- **Remote System Screen:** Live command output display
-- **Fullscreen Toggles:** ⛶ buttons for Log and Screen panels
-
-**Chat Tab:**
-- **Fixed Header:** Action plan button, Auto-Accept toggle, Clear, Fullscreen
-- **Chat History:** Conversational interface with the agent (auto-scrolls to latest)
-- **Draggable Resizer:** Adjust input area height by dragging the handle
-- **Chat Input:** Multi-line textarea for natural language input
-- **Action Plan Button:** Click to view/create action plans (shows step progress)
-- **Auto-Accept Tasks:** Toggle for automatic task approval
-- **Chat Controls:** Clear chat history, fullscreen mode
-
-**History & Reports Tab:**
-- **Agent Memory Editor:** Edit LLM working context
-- **Full Log Viewer:** Immutable execution record
-- **Session Management:** Download/reset functionality
-
-### Visual Indicators
-
-- **Green:** Success states, active elements
-- **Orange:** In-progress states, warnings
-- **Red:** Errors, destructive actions
-- **Blue:** Information, navigation links
-
-### Keyboard Shortcuts
-
-- **Tab Navigation:** Click tab names to switch views
-- **Fullscreen:** Click ⛶ buttons for focused views
-- **Modals:** Click outside or "X" to close
+| Prompt | Purpose | Variables |
+|--------|---------|-----------|
+| OllamaPrompt / CloudPrompt | Main execution loop | `{objective}`, `{history}`, `{system_info}`, `{command_timeout}` |
+| OllamaPromptWithAsk / CloudPromptWithAsk | Execution with ASK capability | same + ASK format |
+| ChatPrompt | Chat interface persona | `{user_message}`, `{chat_history}`, `{action_plan_status}` |
+| OllamaSummarizePrompt / CloudSummarizePrompt | History compression | `{objective}`, `{history}` |
+| OllamaStepSummaryPrompt / CloudStepSummaryPrompt | Large output summarization | `{output}` |
+| OllamaSearchSummaryPrompt / CloudSearchSummaryPrompt | Search result synthesis | `{objective}`, `{reason}`, `{results}` |
+| OllamaValidatePrompt / CloudValidatePrompt | Command safety check | `{command}`, `{system_info}`, `{sudo_available}`, `{command_timeout}` |
+| OllamaValidateReportPrompt / CloudValidateReportPrompt | Report auditing | `{objective}`, `{history}`, `{report}` |
+| WebSearchPrompt | Web research LLM guidance | `{reason}`, `{query}` |
+| WebSearchInjection | Teaches chat LLM to use WEB_SEARCH | — |
+| KnowledgePrompt | Knowledge document injection | `{documents}` |
 
 ## Security Considerations
 
-⚠️ **Important**: This tool executes commands on remote systems autonomously. Always:
+⚠️ **This tool executes commands on remote systems autonomously.** Always:
 - Use dedicated test systems for experimentation
 - Review generated commands in Assisted mode
-- Restrict SSH access appropriately
-- Never share your `config.ini` or API keys
 - Monitor agent activity closely
-- Be cautious with auto-accept tasks in production environments
-- Review action plans before execution starts
+- Never share your `keys/config.ini` or API keys
+- Be cautious with Auto-Accept and Auto-Switch in production environments
 
 ## Documentation
 
-See [CLAUDE.md](CLAUDE.md) for comprehensive technical documentation including:
-- Detailed architecture diagrams
-- Development guidelines
-- Troubleshooting guide
-- Docker deployment details
+See [CLAUDE.md](CLAUDE.md) for comprehensive technical documentation including architecture details, key patterns, debugging guide, and recent change log.
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
-
-GPL v3 ensures that any modifications or derivative works remain open source and freely available to the community.
+GNU General Public License v3.0 — see [LICENSE](LICENSE). Any modifications or derivative works must remain open source.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
-## Support
-
-For questions or issues, please open an issue on GitHub.
+Issues and pull requests are welcome.
